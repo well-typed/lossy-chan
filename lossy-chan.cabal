@@ -57,3 +57,4 @@ benchmark lossy-chan-benchmark
     base >=4.16 && <5,
     criterion,
     lossy-chan,
+    unagi-chan,
