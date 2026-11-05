@@ -6,6 +6,7 @@ import Data.Foldable (for_)
 import Data.Word (Word8)
 import Test.Tasty (defaultMain, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
+import System.Timeout (timeout)
 
 main :: IO ()
 main =
@@ -17,6 +18,13 @@ main =
               o <- LC.out i
               v <- LC.send i 1 >> LC.receive o
               v @?= 1
+          , testCase "send i 1 >> receive o >> receive o ==> block" $ do
+              i <- LC.new n :: IO (InChan Int)
+              o <- LC.out i
+              v <- LC.send i 1 >> LC.receive o
+              v @?= 1
+              w <- timeout 1000 (LC.receive o)
+              w @?= Nothing
           , testCase "for_ [0..n+1] (send i) >> receive o ==> 2" $ do
               i <- LC.new n :: IO (InChan Int)
               o <- LC.out i
