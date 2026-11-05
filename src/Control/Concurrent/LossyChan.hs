@@ -143,7 +143,7 @@ livePos :: OutChan a -> STM (Maybe ChanPos)
 livePos MkOutChan{inChan = MkInChan{..}, ..} = do
   icp <- readTVar icpVar
   ocp <- live icp <$> readTVar outPosVar
-  pure $ if ocp == zero && icp == zero then Nothing else Just ocp
+  pure $ if icp <= ocp then Nothing else Just ocp
 
 tryReceive :: OutChan a -> IO (Maybe a)
 tryReceive outChan@MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}}, ..} = do
