@@ -16,6 +16,7 @@ import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, write
 import Control.Monad (when)
 import Data.Word (Word8)
 import GHC.Conc (STM (..), atomically, retry)
+import GHC.Conc.Sync (orElse)
 import GHC.Exts (Int (..), Int#, RealWorld, SmallArray#, TVar#, indexSmallArray#, isTrue#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
 
@@ -139,26 +140,23 @@ out inChan@(MkInChan{..}) = do
   outPosVar <- newTVarIO (minLive ip)
   pure MkOutChan{..}
 
-livePos :: OutChan a -> STM (Maybe ChanPos)
-livePos MkOutChan{inChan = MkInChan{..}, ..} = do
+receiveSTM :: OutChan a -> STM a
+receiveSTM MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} = do
   icp <- readTVar icpVar
   ocp <- live icp <$> readTVar outPosVar
-  pure $ if icp <= ocp then Nothing else Just ocp
+  if icp <= ocp
+    then retry
+    else do
+      writeTVar outPosVar (advance (I# len#) ocp)
+      readChanBuf buffer (next ocp)
 
 tryReceive :: OutChan a -> IO (Maybe a)
-tryReceive outChan@MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}}, ..} = do
+tryReceive o =
   atomically $
-    livePos outChan >>= \case
-      Nothing -> pure Nothing
-      Just ocp -> do
-        writeTVar outPosVar (advance (I# len#) ocp)
-        Just <$> readChanBuf buffer (next ocp)
+    (Just <$> receiveSTM o)
+      `orElse` (pure Nothing)
 
 receive :: OutChan a -> IO a
-receive outChan@MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}}, ..} = do
+receive o =
   atomically $
-    livePos outChan >>= \case
-      Nothing -> retry
-      Just ocp -> do
-        writeTVar outPosVar (advance (I# len#) ocp)
-        readChanBuf buffer (next ocp)
+    receiveSTM o
