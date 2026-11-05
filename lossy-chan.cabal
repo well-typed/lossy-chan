@@ -35,7 +35,6 @@ library
   exposed-modules: Control.Concurrent.LossyChan
   build-depends:
     base >=4.16 && <5,
-    primitive,
     stm >=2 && <2.6,
 
 test-suite lossy-chan-test
