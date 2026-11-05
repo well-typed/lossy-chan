@@ -40,10 +40,22 @@ library
       , stm >=2 && <2.6
 
 test-suite lossy-chan-test
-    import:           language
-    type:             exitcode-stdio-1.0
-    hs-source-dirs:   test
-    main-is:          Main.hs
-    build-depends:
-      , base >=4.16 && <5
-      , lossy-chan
+  import: language
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Main.hs
+  build-depends:
+    base >=4.16 && <5,
+    lossy-chan,
+    tasty,
+    tasty-hunit,
+
+benchmark lossy-chan-benchmark
+  import: language
+  type: exitcode-stdio-1.0
+  hs-source-dirs: benchmark
+  main-is: Main.hs
+  build-depends:
+    base >=4.16 && <5,
+    criterion,
+    lossy-chan,
