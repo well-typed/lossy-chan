@@ -13,11 +13,9 @@ module Control.Concurrent.LossyChan (
   tryReceive,
 ) where
 
-import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Monad (when)
 import Data.Word (Word16, Word32, Word8)
-import GHC.Conc (STM (..), atomically, retry)
-import GHC.Conc.Sync (orElse)
+import GHC.Conc (STM (..), TVar, atomically, newTVarIO, orElse, readTVar, readTVarIO, retry, writeTVar)
 import GHC.Exts (Int#, RealWorld, SmallArray#, State#, TVar#, Word32#, indexSmallArray#, isTrue#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word32ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
 import GHC.Word (Word32 (..))

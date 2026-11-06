@@ -34,8 +34,7 @@ library
   hs-source-dirs: src
   exposed-modules: Control.Concurrent.LossyChan
   build-depends:
-    base >=4.16 && <5,
-    stm >=2 && <2.6,
+    base >=4.16 && <5
 
 test-suite lossy-chan-test
   import: language
