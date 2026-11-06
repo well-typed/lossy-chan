@@ -13,7 +13,6 @@ import Criterion.Main (Benchmark, Benchmarkable, bench, bgroup, defaultMain, whn
 import Data.Foldable (for_)
 import Data.Kind (Type)
 import Data.Word (Word32)
-import Prelude hiding (snd)
 
 main :: IO ()
 main = do
@@ -52,43 +51,43 @@ benchChanWith c s r =
 runChanWith :: Chan i o -> BenchOpts -> Benchmarkable
 runChanWith MkChan{..} MkBenchOpts{..} =
   whnfIO $ do
-    i <- new
+    (i, o) <- new
     for_ [1 .. senders] $ \sender ->
       forkIO $
         for_ [1 .. messages] $ \messageId ->
-          snd i (sender, messageId)
-    for_ [1 .. receivers] $ \_receiver ->
+          send i (sender, messageId)
+    for_ [1 .. receivers] $ \_receiver -> do
+      o' <- dup (i, o)
       forkIO $ do
-        o <- dup i
         let go (_sender, messageId)
               | messageId == messages = pure ()
-              | otherwise = go =<< rcv o
-        go =<< rcv o
+              | otherwise = go =<< recv o'
+        go =<< recv o'
 
 data Chan (i :: Type -> Type) (o :: Type -> Type)
   = MkChan
-  { new :: forall a. IO (i a)
-  , dup :: forall a. i a -> IO (o a)
-  , snd :: forall a. i a -> a -> IO ()
-  , rcv :: forall a. o a -> IO a
+  { new :: forall a. IO (i a, o a)
+  , dup :: forall a. (i a, o a) -> IO (o a)
+  , send :: forall a. i a -> a -> IO ()
+  , recv :: forall a. o a -> IO a
   }
 
 lossyChan :: Word32 -> Chan LC.InChan LC.OutChan
 lossyChan len =
   MkChan
     { new = LC.new len
-    , dup = LC.out
-    , snd = LC.send
-    , rcv = LC.receive
+    , dup = LC.dup . snd
+    , send = LC.send
+    , recv = LC.receive
     }
 {-# INLINE lossyChan #-}
 
 unagiChan :: Chan UC.InChan UC.OutChan
 unagiChan =
   MkChan
-    { new = fst <$> UC.newChan
-    , dup = UC.dupChan
-    , snd = UC.writeChan
-    , rcv = UC.readChan
+    { new = UC.newChan
+    , dup = UC.dupChan . fst
+    , send = UC.writeChan
+    , recv = UC.readChan
     }
 {-# INLINE unagiChan #-}
