@@ -23,7 +23,6 @@ common language
     -Wunused-packages
 
   default-extensions:
-    BangPatterns
     ImportQualifiedPost
     RecordWildCards
 
