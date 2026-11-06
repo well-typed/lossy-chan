@@ -13,6 +13,7 @@ import Criterion.Main (Benchmark, bench, defaultMain, whnfIO)
 import Data.Foldable (for_)
 import Data.Kind (Type)
 import Prelude hiding (snd)
+import Data.Word (Word32)
 
 main :: IO ()
 main = do
@@ -54,7 +55,7 @@ main = do
 data BenchmarkOptions
   = MkBenchmarkOptions
   { optionTag :: String
-  , bufferSize :: Int
+  , bufferSize :: Word32
   , senders :: Int
   , receivers :: Int
   , messagesPerSender :: Int
@@ -79,7 +80,7 @@ benchmark MkChan{..} MkBenchmarkOptions{..} =
 data Chan (i :: Type -> Type) (o :: Type -> Type)
   = MkChan
   { tag :: String
-  , new :: forall a. Int -> IO (i a)
+  , new :: forall a. Word32 -> IO (i a)
   , dup :: forall a. i a -> IO (o a)
   , snd :: forall a. i a -> a -> IO ()
   , rcv :: forall a. o a -> IO a
