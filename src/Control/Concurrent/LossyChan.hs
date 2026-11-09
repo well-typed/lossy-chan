@@ -74,7 +74,13 @@ Get the latest of the current output position or the oldest live position.
 -}
 live :: ChanPos -> ChanPos -> ChanPos
 live icPos ocPos
-  | loop icPos == loop ocPos || next icPos <= next ocPos = ocPos
+  -- The output channel is on the same loop as the input channel, and
+  -- the position is behind (or just caught up with) the input channel.
+  | loop ocPos == loop icPos && next ocPos <= next icPos = ocPos
+  -- The output channel is one loop behind the input channel, and the
+  -- position is aheaad of the input channel.
+  | loop ocPos == loop icPos - 1 && next ocPos >= next icPos = ocPos
+  -- The output channel is several loops behind the input channel.
   | otherwise = icPos{loop = loop icPos - 1}
 {-# INLINE live #-}
 
@@ -137,7 +143,6 @@ takeChanBuf MkChanBuf{..} ocCount (W32# i#) =
             | otherwise ->
                 case writeTVar# vari# Entry{seen = seen + 1, ..} s2# of
                   s3# -> (# s3#, Just val #)
-{-# INLINE takeChanBuf #-}
 
 {- |
 Write the given value to a `ChanBuf` at the given position.
@@ -150,7 +155,29 @@ writeChanBuf MkChanBuf{..} (W32# i#) a =
         case writeTVar# vari# a s1# of
           s2# ->
             (# s2#, () #)
-{-# INLINE writeChanBuf #-}
+
+{- |
+Check the `ChanBuf` `Entry` at the given position. If the `seen` count is
+greater than or equal to the new (decremented) output channel count, free
+the entry.
+
+This function returns `Just` `True` if the entry was freed, `Just` `False`
+if the entry was not freed, and `Nothing` if the entry was uninitialised.
+-}
+tryFreeChanBufAt :: ChanBuf a -> Word -> Word32 -> STM (Maybe Bool)
+tryFreeChanBufAt MkChanBuf{..} ocCount (W32# i#) =
+  STM $ \s1# ->
+    case indexSmallArray# arr# (word32ToInt# i#) of
+      (# vari# #) ->
+        case readTVar# vari# s1# of
+          (# s2#, Empty #) ->
+            (# s2#, Nothing #)
+          (# s2#, Entry seen _val #)
+            | seen >= ocCount ->
+                case writeTVar# vari# Empty s2# of
+                  s3# -> (# s3#, Just True #)
+            | otherwise ->
+                (# s2#, Just False #)
 
 {- |
 The channel state.
@@ -198,6 +225,48 @@ data OutChan a = MkOutChan
   }
 
 {- |
+Free an output channel.
+
+__Warning:__
+This is the only STM operation that walks the channel buffer. Therefore, if
+there's a lot of competition, this STM operation may repeatedly retry, which
+would prevent the buffer entries from being garbage collected until the point
+where the input channel position passed this output channel's position.
+-}
+freeOutChan :: OutChan a -> IO ()
+freeOutChan MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..} =
+  atomically $ do
+    -- Decrement the output channel counter.
+    ocCount <- subtract 1 <$> readTVar ocCountVar
+    writeTVar ocCountVar ocCount
+
+    -- Walk the buffer to free values that have been seen by every remaining OutChan.
+    icPos <- readTVar icPosVar
+    ocPos <- live icPos <$> readTVar ocPosVar
+    let go cp
+          | icPos == cp = pure ()
+          | otherwise = do
+              mbSuccess <- tryFreeChanBufAt buffer ocCount (next cp)
+              case mbSuccess of
+                Nothing
+                  | loop icPos == 0 && next icPos <= next cp -> go zero
+                  | otherwise -> pure ()
+                Just True -> go (advance len# cp)
+                Just False -> pure ()
+    go ocPos
+
+{- |
+Add a finalizer to a `TVar`.
+
+Adapted from @mkWeakTVar in @stm@.
+-}
+addFinalizerTVar :: TVar a -> IO () -> IO ()
+addFinalizerTVar t@(TVar t#) (IO finalizer) = IO $ \s1# ->
+  case mkWeak# t# t finalizer s1# of
+    (# s2, _ #) ->
+      (# s2, () #)
+
+{- |
 @`new` len@ creates an input channel that is backed by a ring buffer with length @len@.
 
 The ring buffer is represented as a @SmallArray@, so @len@ should be smaller than 128.
@@ -232,71 +301,6 @@ send MkInChan{icState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}} a =
     writeTVar icPosVar (advance len# icPos)
 
 {- |
-Free an output channel.
-
-__Warning:__
-This is the only STM operation that walks the channel buffer. Therefore, if
-there's a lot of competition, this STM operation may repeatedly retry, which
-would prevent the buffer entries from being garbage collected until the point
-where the input channel position passed this output channel's position.
--}
-freeOutChan :: OutChan a -> IO ()
-freeOutChan MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..} =
-  atomically $ do
-    -- Decrement the output channel counter.
-    ocCount <- subtract 1 <$> readTVar ocCountVar
-    writeTVar ocCountVar ocCount
-
-    -- Walk the buffer to free values that have been seen by every remaining OutChan.
-    icPos <- readTVar icPosVar
-    ocPos <- live icPos <$> readTVar ocPosVar
-    let go cp
-          | icPos == cp = pure ()
-          | otherwise = do
-              mbSuccess <- tryFreeChanBufAt buffer ocCount (next cp)
-              case mbSuccess of
-                Nothing
-                  | loop icPos == 0 && next icPos <= next cp -> go zero
-                  | otherwise -> pure ()
-                Just True -> go (advance len# cp)
-                Just False -> pure ()
-    go ocPos
-
-{- |
-Check the `ChanBuf` `Entry` at the given position. If the `seen` count is
-greater than or equal to the new (decremented) output channel count, free
-the entry.
-
-This function returns `Just` `True` if the entry was freed, `Just` `False`
-if the entry was not freed, and `Nothing` if the entry was uninitialised.
--}
-tryFreeChanBufAt :: ChanBuf a -> Word -> Word32 -> STM (Maybe Bool)
-tryFreeChanBufAt MkChanBuf{..} ocCount (W32# i#) =
-  STM $ \s1# ->
-    case indexSmallArray# arr# (word32ToInt# i#) of
-      (# vari# #) ->
-        case readTVar# vari# s1# of
-          (# s2#, Empty #) ->
-            (# s2#, Nothing #)
-          (# s2#, Entry seen _val #)
-            | seen >= ocCount ->
-                case writeTVar# vari# Empty s2# of
-                  s3# -> (# s3#, Just True #)
-            | otherwise ->
-                (# s2#, Just False #)
-
-{- |
-Add a finalizer to a `TVar`.
-
-Adapted from @mkWeakTVar in @stm@.
--}
-addFinalizerTVar :: TVar a -> IO () -> IO ()
-addFinalizerTVar t@(TVar t#) (IO finalizer) = IO $ \s1# ->
-  case mkWeak# t# t finalizer s1# of
-    (# s2, _ #) ->
-      (# s2, () #)
-
-{- |
 @`dup` o@ duplicates the output channel @o@.
 -}
 dup :: OutChan a -> IO (OutChan a)
@@ -326,6 +330,10 @@ dup oc@MkOutChan{ocState = ocState@MkChanState{..}, ..} =
     addFinalizerTVar ocPosVar' (freeOutChan oc)
     pure MkOutChan{ocPosVar = ocPosVar', ..}
 
+{- |
+The error thrown by `receive` and `tryReceive` when the corresponding `InChan`
+has been garbage collected and the channel buffer is empty.
+-}
 data NoInChanError = ErrNoInChan
   deriving (Show)
 
@@ -342,8 +350,9 @@ the buffer is empty, this function throws an `NoInChanError`.
 receiveT :: OutChan a -> STM a
 receiveT MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..} = do
   icPos <- readTVar icPosVar
-  ocPos <- live icPos <$> readTVar ocPosVar
-  receiveT_ icPos ocPos
+  ocPos0 <- readTVar ocPosVar
+  let ocPos1 = live icPos ocPos0
+  receiveT_ icPos ocPos1
  where
   -- During the first loop, the loop counter is zero and the segment
   -- between channel positions icPos and zero is uninitialised. During
