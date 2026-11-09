@@ -136,6 +136,11 @@ unitTests n =
         performMajorGC
         timeout 10000 (takeMVar p1)
           >>= maybe (assertFailure "") pure
+    , testCase "receive hangs if InChan is dropped" $ do
+        -- This testCase confirms an undesirable behaviour.
+        (_, o) <- LC.new @() n
+        v <- timeout 1000 (LC.receive o)
+        v @?= Nothing
     ]
 
 {- |
