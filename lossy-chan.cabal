@@ -30,12 +30,22 @@ common language
 
   default-language: Haskell2010
 
+
+flag small-loop-counter
+  description:
+    Use Word8 instead of Word32 for the loop counter,
+    for the purposes of testing loop counter overflows.
+  default: False
+  manual: True
+
 library
   import: language
   hs-source-dirs: src
   exposed-modules: Control.Concurrent.LossyChan
-  build-depends:
-    base >=4.16 && <5
+  build-depends: base >=4.16 && <5
+
+  if flag(small-loop-counter)
+    cpp-options: -DLOSSY_CHAN_SMALL_LOOP_COUNTER
 
 test-suite lossy-chan-test
   import: language

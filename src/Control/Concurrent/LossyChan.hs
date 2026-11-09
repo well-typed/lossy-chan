@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE UnboxedTuples #-}
 
@@ -11,17 +12,26 @@ module Control.Concurrent.LossyChan (
   tryReceive,
 ) where
 
-import Data.Word (Word16, Word32, Word8)
 import GHC.Conc (STM (..), TVar (..), atomically, newTVar, newTVarIO, orElse, readTVar, retry, writeTVar)
 import GHC.Exts (Int#, RealWorld, SmallArray#, State#, TVar#, Word32#, indexSmallArray#, isTrue#, mkWeak#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word32ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
 import GHC.Word (Word32 (..))
 
+#ifdef LOSSY_CHAN_SMALL_LOOP_COUNTER
+-- If the small-loop-counter flag is set, use Word8.
+import Data.Word (Word8)
+
+type LoopCounter = Word8
+#else
+-- Otherwise, use Word32.
+type LoopCounter = Word32
+#endif
+
 {- |
 The position in a channel ring buffer.
 -}
 data ChanPos = MkChanPos
-  { loop :: {-# UNPACK #-} !Word32
+  { loop :: {-# UNPACK #-} !LoopCounter
   {- ^
   This value tracks the current loop around the channel ring buffer, which is
   used to determine whether or not a channel position refers to a live value.
