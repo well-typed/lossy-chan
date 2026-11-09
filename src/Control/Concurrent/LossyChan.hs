@@ -59,9 +59,9 @@ zero = MkChanPos{full = 0, loop = 0, next = 0}
 {- |
 Advance to the next channel position.
 -}
-advance :: Word32 -> ChanPos -> ChanPos
-advance size MkChanPos{..}
-  | next < size - 1 = MkChanPos{next = next + 1, ..}
+advance :: Word32# -> ChanPos -> ChanPos
+advance len# MkChanPos{..}
+  | next < W32# len# - 1 = MkChanPos{next = next + 1, ..}
   | otherwise = MkChanPos{full = 1, loop = loop + 1, next = 0}
 {-# INLINE advance #-}
 
@@ -203,7 +203,7 @@ send MkInChan{buffer = buffer@MkChanBuf{..}, ..} a =
   atomically $ do
     icp@MkChanPos{..} <- readTVar icpVar
     writeChanBuf buffer next Entry{seen = 0, val = a}
-    writeTVar icpVar (advance (W32# len#) icp)
+    writeTVar icpVar (advance len# icp)
 
 {- |
 An output channel.
@@ -236,7 +236,7 @@ freeOutChan MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} 
           | icp <= cp = pure ()
           | otherwise = do
               success <- tryFreeChanBufAt buffer occ (next cp)
-              if success then go (advance (W32# len#) cp) else pure ()
+              if success then go (advance len# cp) else pure ()
     go ocp
 
 {- |
@@ -308,7 +308,7 @@ receiveT MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} = d
   if icp <= ocp
     then retry
     else do
-      writeTVar ocpVar (advance (W32# len#) ocp)
+      writeTVar ocpVar (advance len# ocp)
       occ <- readTVar occVar
       maybe uninitialised pure =<< takeChanBuf buffer occ (next ocp)
 
