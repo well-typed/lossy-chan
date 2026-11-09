@@ -3,20 +3,21 @@
 
 module Main (main) where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.LossyChan qualified as LC
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (handle)
 import Control.Monad (void)
 import Data.Foldable (for_)
 import Data.IORef (IORef, mkWeakIORef, newIORef)
 import Data.Traversable (for)
 import Data.Word (Word32, Word8)
-import System.Mem (performMajorGC)
+import System.Mem (performMajorGC, performBlockingMajorGC)
 import System.Mem.Weak (Weak)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Test.Tasty.QuickCheck (Property, chooseBoundedIntegral, counterexample, forAll, ioProperty, label, testProperty)
-import Control.Exception (handle)
 
 main :: IO ()
 main = do
@@ -129,22 +130,44 @@ unitTests n =
         vs @?= [1, 1]
     , testCase "early free" $ do
         p1 <- newEmptyMVar
-        p2 <- newEmptyMVar
         t1 <- mkTellOnFree p1
-        t2 <- mkTellOnFree p2
         (i, o) <- LC.new n
-        LC.send i t1 >> LC.send i t2 >> void (LC.receive o)
-        performMajorGC
-        timeout 10000 (takeMVar p1)
-          >>= maybe (assertFailure "") pure
+        LC.send i (Left t1)
+        LC.send i (Right ())
+        void (LC.receive o)
+        performBlockingMajorGC
+        timeout 100000 (takeMVar p1)
+          >>= maybe (assertFailure "t1 was not freed") pure
     , testCase "receive hangs if InChan is dropped" $ do
-        let toLeft LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
+        let handleNoChan LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
         (_, o) <- LC.new @() n
         performMajorGC
-        v <- handle toLeft (Right <$> timeout 10000 (LC.receive o))
+        v <- handle handleNoChan (Right <$> timeout 10000 (LC.receive o))
         case v of
           Left LC.ErrNoInChan -> pure ()
           Right _ -> assertFailure "ErrNoInChan exception not thrown."
+    , testCase "1 sender, 2 receivers" $ do
+        let handleNoChan LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
+        (i, o1) <- LC.new @Word32 n
+        o2 <- LC.dup o1
+        void . forkIO $ for_ [0 .. n * maxLoop] (LC.send i)
+        void . forkIO $ for_ [0 .. n * maxLoop] (\_ -> handle handleNoChan $ Right <$> LC.receive o1)
+        void . forkIO $ for_ [0 .. n * maxLoop] (\_ -> handle handleNoChan $ Right <$> LC.receive o2)
+        pure ()
+    , testCase "2 senders, 1 receiver" $ do
+        let handleNoChan LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
+        (i, o) <- LC.new @Word32 n
+        void . forkIO $ for_ [0 .. n * maxLoop] (LC.send i)
+        void . forkIO $ for_ [0 .. n * maxLoop] (LC.send i)
+        void . forkIO $ for_ [0 .. n * maxLoop] (\_ -> handle handleNoChan $ Right <$> LC.receive o)
+    , testCase "2 senders, 2 receivers" $ do
+        let handleNoChan LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
+        (i, o1) <- LC.new @Word32 n
+        o2 <- LC.dup o1
+        void . forkIO $ for_ [0 .. maxBound @Word32] (LC.send i)
+        void . forkIO $ for_ [0 .. maxBound @Word32] (LC.send i)
+        void . forkIO $ for_ [0 .. maxBound @Word32] (\_ -> handle handleNoChan $ Right <$> LC.receive o1)
+        void . forkIO $ for_ [0 .. maxBound @Word32] (\_ -> handle handleNoChan $ Right <$> LC.receive o2)
     ]
 
 {- |
