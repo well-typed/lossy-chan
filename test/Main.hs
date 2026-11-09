@@ -16,6 +16,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Test.Tasty.QuickCheck (Property, chooseBoundedIntegral, counterexample, forAll, ioProperty, label, testProperty)
+import Control.Exception (handle)
 
 main :: IO ()
 main = do
@@ -137,10 +138,13 @@ unitTests n =
         timeout 10000 (takeMVar p1)
           >>= maybe (assertFailure "") pure
     , testCase "receive hangs if InChan is dropped" $ do
-        -- This testCase confirms an undesirable behaviour.
+        let toLeft LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
         (_, o) <- LC.new @() n
-        v <- timeout 1000 (LC.receive o)
-        v @?= Nothing
+        performMajorGC
+        v <- handle toLeft (Right <$> timeout 10000 (LC.receive o))
+        case v of
+          Left LC.ErrNoInChan -> pure ()
+          Right _ -> assertFailure "ErrNoInChan exception not thrown."
     ]
 
 {- |
