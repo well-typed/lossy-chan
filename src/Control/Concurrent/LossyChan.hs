@@ -12,6 +12,7 @@ module Control.Concurrent.LossyChan (
   tryReceive,
 ) where
 
+import Control.Exception (mask)
 import GHC.Conc (STM (..), TVar (..), atomically, newTVar, newTVarIO, orElse, readTVar, retry, writeTVar)
 import GHC.Exts (Int#, RealWorld, SmallArray#, State#, TVar#, Word32#, indexSmallArray#, isTrue#, mkWeak#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word32ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
@@ -175,10 +176,13 @@ new len = do
   occVar <- newTVarIO 1
   let inChan = MkInChan{..}
 
-  -- Create the output channel.
-  ocpVar <- newTVarIO zero
-  let outChan = MkOutChan{..}
-  addFinalizerTVar ocpVar (freeOutChan outChan)
+  -- This section is masked to ensure that the finalizer is attached.
+  outChan <- mask $ \_restore -> do
+    -- Create the output channel.
+    ocpVar <- newTVarIO zero
+    let outChan = MkOutChan{..}
+    addFinalizerTVar ocpVar (freeOutChan outChan)
+    pure outChan
 
   pure (inChan, outChan)
 
@@ -269,29 +273,31 @@ addFinalizerTVar t@(TVar t#) (IO finalizer) = IO $ \s1# ->
 @`dup` o@ duplicates the output channel @o@.
 -}
 dup :: OutChan a -> IO (OutChan a)
-dup outChan@MkOutChan{inChan = inChan@MkInChan{..}, ..} = do
-  -- These two operations are performed atomically. Otherwise, if we're very
-  -- unlucky with reorderings, we may get this interleaving between dup and
-  -- receive on the same output channel:
-  --
-  -- occ <- readTVar occVar            [receive]
-  -- incrementOccVar occVar            [dup, (1)]
-  -- newTVar =<< readTVar ocpVar       [dup, (2)]
-  -- writeTVar ocpVar (advance ocp)    [receive]
-  -- takeChanBuf buffer occ (next ocp) [receive]
-  --
-  -- The takeChanBuf operation may then decide, based on an outdated output
-  -- channel count, to replace the Entry with Empty, which causes the new
-  -- output channel position to point to a forgotten value.
-  ocpVar' <- atomically $ do
-    -- (1) Increment the output channel counter.
-    writeTVar occVar . (+ 1) =<< readTVar occVar
+dup outChan@MkOutChan{inChan = inChan@MkInChan{..}, ..} =
+  -- This operation is masked to ensure that the finalizer is attached.
+  mask $ \_restore -> do
+    -- These two operations are performed atomically. Otherwise, if we're very
+    -- unlucky with reorderings, we may get this interleaving between dup and
+    -- receive on the same output channel:
+    --
+    -- occ <- readTVar occVar            [receive]
+    -- incrementOccVar occVar            [dup, (1)]
+    -- newTVar =<< readTVar ocpVar       [dup, (2)]
+    -- writeTVar ocpVar (advance ocp)    [receive]
+    -- takeChanBuf buffer occ (next ocp) [receive]
+    --
+    -- The takeChanBuf operation may then decide, based on an outdated output
+    -- channel count, to replace the Entry with Empty, which causes the new
+    -- output channel position to point to a forgotten value.
+    ocpVar' <- atomically $ do
+      -- (1) Increment the output channel counter.
+      writeTVar occVar . (+ 1) =<< readTVar occVar
 
-    -- (2) Duplicate the output channel position variable.
-    newTVar =<< readTVar ocpVar
+      -- (2) Duplicate the output channel position variable.
+      newTVar =<< readTVar ocpVar
 
-  addFinalizerTVar ocpVar' (freeOutChan outChan)
-  pure MkOutChan{ocpVar = ocpVar', ..}
+    addFinalizerTVar ocpVar' (freeOutChan outChan)
+    pure MkOutChan{ocpVar = ocpVar', ..}
 
 {- |
 @`receiveT` o@ receives a value from an output channel and retries if none are available.
