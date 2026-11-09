@@ -152,15 +152,30 @@ writeChanBuf MkChanBuf{..} (W32# i#) a =
 {-# INLINE writeChanBuf #-}
 
 {- |
-An input channel.
+The channel state.
 -}
-data InChan a = MkInChan
+data ChanState a = MkChanState
   { buffer :: {-# UNPACK #-} !(ChanBuf a)
   -- ^ The underlying channel ring buffer.
   , icpVar :: {-# UNPACK #-} !(TVar ChanPos)
   -- ^ A `TVar` that holds the current input channel position.
   , occVar :: {-# UNPACK #-} !(TVar Word)
   -- ^ A `TVar` that holds the current output channel count.
+  }
+
+{- |
+An input channel.
+-}
+data InChan a = MkInChan
+  { istate :: {-# UNPACK #-} !(ChanState a)
+  }
+
+{- |
+An output channel.
+-}
+data OutChan a = MkOutChan
+  { ostate :: !(ChanState a)
+  , ocpVar :: !(TVar ChanPos)
   }
 
 {- |
@@ -174,13 +189,14 @@ new len = do
   buffer <- newChanBuf len
   icpVar <- newTVarIO zero
   occVar <- newTVarIO 1
-  let inChan = MkInChan{..}
+  let state = MkChanState{..}
+  let inChan = MkInChan{istate = state}
 
   -- This section is masked to ensure that the finalizer is attached.
   outChan <- mask $ \_restore -> do
     -- Create the output channel.
     ocpVar <- newTVarIO zero
-    let outChan = MkOutChan{..}
+    let outChan = MkOutChan{ostate = state, ..}
     addFinalizerTVar ocpVar (freeOutChan outChan)
     pure outChan
 
@@ -190,19 +206,11 @@ new len = do
 @`send` i x@ sends the value @x@ over the input channel @i@.
 -}
 send :: InChan a -> a -> IO ()
-send MkInChan{buffer = buffer@MkChanBuf{..}, ..} a =
+send MkInChan{istate = MkChanState{buffer = buffer@MkChanBuf{..}, ..}} a =
   atomically $ do
     icp@MkChanPos{..} <- readTVar icpVar
     writeChanBuf buffer next Entry{seen = 0, val = a}
     writeTVar icpVar (advance len# icp)
-
-{- |
-An output channel.
--}
-data OutChan a = MkOutChan
-  { inChan :: !(InChan a)
-  , ocpVar :: !(TVar ChanPos)
-  }
 
 {- |
 Free an output channel.
@@ -214,7 +222,7 @@ would prevent the buffer entries from being garbage collected until the point
 where the input channel position passed this output channel's position.
 -}
 freeOutChan :: OutChan a -> IO ()
-freeOutChan MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} =
+freeOutChan MkOutChan{ostate = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..} =
   atomically $ do
     -- Decrement the output channel counter.
     occ <- subtract 1 <$> readTVar occVar
@@ -273,7 +281,7 @@ addFinalizerTVar t@(TVar t#) (IO finalizer) = IO $ \s1# ->
 @`dup` o@ duplicates the output channel @o@.
 -}
 dup :: OutChan a -> IO (OutChan a)
-dup outChan@MkOutChan{inChan = inChan@MkInChan{..}, ..} =
+dup outChan@MkOutChan{ostate = ostate@MkChanState{..}, ..} =
   -- This operation is masked to ensure that the finalizer is attached.
   mask $ \_restore -> do
     -- These two operations are performed atomically. Otherwise, if we're very
@@ -303,7 +311,7 @@ dup outChan@MkOutChan{inChan = inChan@MkInChan{..}, ..} =
 @`receiveT` o@ receives a value from an output channel and retries if none are available.
 -}
 receiveT :: OutChan a -> STM a
-receiveT MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} = do
+receiveT MkOutChan{ostate = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..} = do
   icp <- readTVar icpVar
   ocp <- live icp <$> readTVar ocpVar
   receiveT_ icp ocp
