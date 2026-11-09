@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Main (main) where
@@ -7,18 +8,17 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (void)
 import Data.Foldable (for_)
 import Data.IORef (IORef, mkWeakIORef, newIORef)
-import Data.Maybe (catMaybes)
 import Data.Traversable (for)
-import Data.Word (Word16, Word32)
+import Data.Word (Word32, Word8)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
-import Test.Tasty.QuickCheck (Arbitrary (..), Large (..), Positive (..), Property, chooseBoundedIntegral, counterexample, forAll, ioProperty, label, testProperty)
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.QuickCheck (Property, chooseBoundedIntegral, counterexample, forAll, ioProperty, label, testProperty)
 
 main :: IO ()
-main =
+main = do
   defaultMain $
     testGroup
       "Tests"
@@ -44,10 +44,10 @@ Test that a @lossy-chan@ channel is lossless if the receiver keeps up.
 prop_LosslessWhenKeepingUp :: Property
 prop_LosslessWhenKeepingUp =
   forAll (chooseBoundedIntegral (1, 128)) $ \n ->
-    forAll arbitrary $ \(Positive (Large m)) ->
-      label (if fromIntegral n >= m then "N >= M" else "N <  M") $
+    forAll (chooseBoundedIntegral (1, 2 * n * maxLoop)) $ \m ->
+      label (if n >= m then "N >= M" else "N <  M") $
         ioProperty $ do
-          (i, o) <- LC.new @Word n
+          (i, o) <- LC.new @Word32 n
           let xs = [0 .. m]
           and
             <$> ( for xs $ \x -> do
@@ -117,6 +117,7 @@ unitTests n =
         v <- for_ [0 .. n * 2] (LC.send i) >> LC.receive o
         v @?= n + 1
     , testCase "for_ [0..n*L+1] (send i) >> receive o ==> n * (L - 1) + 1" $ do
+        assertBool "Library was not built with --flags=+small-loop-counter." smallLoopCounterEnabled
         (i, o) <- LC.new @Word32 n
         v <- for_ [0 .. n * maxLoop] (LC.send i) >> LC.receive o
         v @?= n * (maxLoop - 1) + 1
@@ -155,6 +156,20 @@ mkTellOnFree ping = do
 
 {- |
 The maximum loop value for a @ChanPos@.
+
+This value is the `maxBound` of `Word8`. In the actual implementation,
+`maxLoop` would be `maxBound` of `Word32`. To test the overflow cases,
+build the library with @--flags=+small-loop-counter@.
 -}
 maxLoop :: Word32
-maxLoop = fromIntegral (maxBound :: Word16)
+maxLoop = fromIntegral (maxBound :: Word8)
+
+{- |
+Whether or not the library was built with @--flags=+small-loop-counter@.
+-}
+smallLoopCounterEnabled :: Bool
+#ifdef LOSSY_CHAN_SMALL_LOOP_COUNTER
+smallLoopCounterEnabled = True
+#else
+smallLoopCounterEnabled = False
+#endif

@@ -59,6 +59,9 @@ test-suite lossy-chan-test
     tasty-hunit,
     tasty-quickcheck,
 
+  if flag(small-loop-counter)
+    cpp-options: -DLOSSY_CHAN_SMALL_LOOP_COUNTER
+
 benchmark lossy-chan-benchmark
   import: language
   type: exitcode-stdio-1.0
