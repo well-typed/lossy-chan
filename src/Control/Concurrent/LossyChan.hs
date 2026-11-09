@@ -21,15 +21,7 @@ import GHC.Word (Word32 (..))
 The position in a channel ring buffer.
 -}
 data ChanPos = MkChanPos
-  { full :: {-# UNPACK #-} !Word8
-  {- ^
-  This value tracks whether the underlying channel ring buffer is full, i.e.,
-  whether every position is initialised. This differs from @`loop` > 0@, as
-  the @`loop`@ count is intended to overflow.
-
-  The value `0` represents `False` and every other value represents `True`.
-  -}
-  , loop :: {-# UNPACK #-} !Word16
+  { loop :: {-# UNPACK #-} !Word32
   {- ^
   This value tracks the current loop around the channel ring buffer, which is
   used to determine whether or not a channel position refers to a live value.
@@ -47,13 +39,13 @@ data ChanPos = MkChanPos
   written to (for senders).
   -}
   }
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
 
 {- |
 The initial position in a channel ring buffer.
 -}
 zero :: ChanPos
-zero = MkChanPos{full = 0, loop = 0, next = 0}
+zero = MkChanPos{loop = 0, next = 0}
 {-# INLINE zero #-}
 
 {- |
@@ -62,23 +54,16 @@ Advance to the next channel position.
 advance :: Word32# -> ChanPos -> ChanPos
 advance len# MkChanPos{..}
   | next < W32# len# - 1 = MkChanPos{next = next + 1, ..}
-  | otherwise = MkChanPos{full = 1, loop = loop + 1, next = 0}
+  | otherwise = MkChanPos{loop = loop + 1, next = 0}
 {-# INLINE advance #-}
-
-{- |
-Get the oldest live position given the current input position.
--}
-minLive :: ChanPos -> ChanPos
-minLive MkChanPos{..}
-  | full == 0 = MkChanPos{next = 0, ..}
-  | otherwise = MkChanPos{loop = loop - 1, ..}
-{-# INLINE minLive #-}
 
 {- |
 Get the latest of the current output position or the oldest live position.
 -}
 live :: ChanPos -> ChanPos -> ChanPos
-live icp ocp = max (minLive icp) ocp
+live icp ocp
+  | loop icp == loop ocp || next icp <= next ocp = ocp
+  | otherwise = icp{loop = loop icp - 1}
 {-# INLINE live #-}
 
 data Entry a
@@ -98,14 +83,6 @@ data ChanBuf a = MkChanBuf
   , arr# :: SmallArray# (TVar# RealWorld (Entry a))
   -- ^ The array that backs the channel ring buffer.
   }
-
-{- |
-Used to fill uninitialised memory in the `ChanBuf`.
-
-This should never be encountered by a library user.
--}
-uninitialised :: a
-uninitialised = error "Control.Concurrent.LossyChan: uninitialised memory"
 
 {- |
 Create a new channel buffer.
@@ -233,31 +210,39 @@ freeOutChan MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} 
     icp <- readTVar icpVar
     ocp <- live icp <$> readTVar ocpVar
     let go cp
-          | icp <= cp = pure ()
+          | icp == cp = pure ()
           | otherwise = do
-              success <- tryFreeChanBufAt buffer occ (next cp)
-              if success then go (advance len# cp) else pure ()
+              mbSuccess <- tryFreeChanBufAt buffer occ (next cp)
+              case mbSuccess of
+                Nothing
+                  | loop icp == 0 && next icp <= next cp -> go zero
+                  | otherwise -> pure ()
+                Just True -> go (advance len# cp)
+                Just False -> pure ()
     go ocp
 
 {- |
 Check the `ChanBuf` `Entry` at the given position. If the `seen` count is
 greater than or equal to the new (decremented) output channel count, free
-the entry. This function returns whether or not an entry was freed.
+the entry.
+
+This function returns `Just` `True` if the entry was freed, `Just` `False`
+if the entry was not freed, and `Nothing` if the entry was uninitialised.
 -}
-tryFreeChanBufAt :: ChanBuf a -> Word -> Word32 -> STM Bool
+tryFreeChanBufAt :: ChanBuf a -> Word -> Word32 -> STM (Maybe Bool)
 tryFreeChanBufAt MkChanBuf{..} occ (W32# i#) =
   STM $ \s1# ->
     case indexSmallArray# arr# (word32ToInt# i#) of
       (# vari# #) ->
         case readTVar# vari# s1# of
           (# s2#, Empty #) ->
-            (# s2#, False #)
+            (# s2#, Nothing #)
           (# s2#, Entry seen _val #)
             | seen >= occ ->
                 case writeTVar# vari# Empty s2# of
-                  s3# -> (# s3#, True #)
+                  s3# -> (# s3#, Just True #)
             | otherwise ->
-                (# s2#, False #)
+                (# s2#, Just False #)
 
 {- |
 Add a finalizer to a `TVar`.
@@ -305,12 +290,35 @@ receiveT :: OutChan a -> STM a
 receiveT MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} = do
   icp <- readTVar icpVar
   ocp <- live icp <$> readTVar ocpVar
-  if icp <= ocp
-    then retry
-    else do
-      writeTVar ocpVar (advance len# ocp)
-      occ <- readTVar occVar
-      maybe uninitialised pure =<< takeChanBuf buffer occ (next ocp)
+  receiveT_ icp ocp
+ where
+  -- During the first loop, the loop counter is zero and the segment
+  -- between channel positions icp and zero is uninitialised. During
+  -- subsequent loops, that segment is live. However, when the loop
+  -- counter wraps around, we will encounter the situation where the
+  -- loop counter is zero, but the segment between channel positions
+  -- icp and zero is live. To handle this situation, if loop is zero,
+  -- we perform one read at icp. If this memory is uninitialised, then
+  -- we skip to zero. This incurs one extra read on the first loop and
+  -- every maxBound loops after that.
+  receiveT_ icp ocp
+    | icp == ocp = retry
+    | otherwise = do
+        occ <- readTVar occVar
+        mbVal <- takeChanBuf buffer occ (next ocp)
+        case mbVal of
+          Nothing
+            | loop icp == 0 && next icp <= next ocp -> receiveT_ icp zero
+            | otherwise -> uninitialised ocp
+          Just val -> writeTVar ocpVar (advance len# ocp) >> pure val
+   where
+    uninitialised :: a
+    uninitialised =
+      error . concat $
+        [ "Control.Concurrent.LossyChan: uninitialised memory"
+        , " at output position " <> show ocp
+        , " (with input position " <> show icp <> ")"
+        ]
 
 {- |
 @`receive` o@ receives a value from an output channel and blocks if none is available.
