@@ -12,7 +12,7 @@ module Control.Concurrent.LossyChan (
 ) where
 
 import Data.Word (Word16, Word32, Word8)
-import GHC.Conc (STM (..), TVar (..), atomically, newTVar, newTVarIO, orElse, readTVar, readTVarIO, retry, writeTVar)
+import GHC.Conc (STM (..), TVar (..), atomically, newTVar, newTVarIO, orElse, readTVar, retry, writeTVar)
 import GHC.Exts (Int#, RealWorld, SmallArray#, State#, TVar#, Word32#, indexSmallArray#, isTrue#, mkWeak#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word32ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
 import GHC.Word (Word32 (..))
@@ -190,8 +190,8 @@ new len = do
 
   -- Create the output channel.
   ocpVar <- newTVarIO zero
-  addFinalizerTVar ocpVar (decrementOutChanCount occVar)
   let outChan = MkOutChan{..}
+  addFinalizerTVar ocpVar (freeOutChan outChan)
 
   pure (inChan, outChan)
 
@@ -214,11 +214,50 @@ data OutChan a = MkOutChan
   }
 
 {- |
-Decrement the output channel counter.
+Free an output channel.
+
+__Warning:__
+This is the only STM operation that walks the channel buffer. Therefore, if
+there's a lot of competition, this STM operation may repeatedly retry, which
+would prevent the buffer entries from being garbage collected until the point
+where the input channel position passed this output channel's position.
 -}
-decrementOutChanCount :: TVar Word -> IO ()
-decrementOutChanCount occVar =
-  atomically $ writeTVar occVar . (subtract 1) =<< readTVar occVar
+freeOutChan :: OutChan a -> IO ()
+freeOutChan MkOutChan{inChan = MkInChan{buffer = buffer@MkChanBuf{..}, ..}, ..} =
+  atomically $ do
+    -- Decrement the output channel counter.
+    occ <- subtract 1 <$> readTVar occVar
+    writeTVar occVar occ
+
+    -- Walk the buffer to free values that have been seen by every remaining OutChan.
+    icp <- readTVar icpVar
+    ocp <- live icp <$> readTVar ocpVar
+    let go cp
+          | icp <= cp = pure ()
+          | otherwise = do
+              success <- tryFreeChanBufAt buffer occ (next cp)
+              if success then go (advance (W32# len#) cp) else pure ()
+    go ocp
+
+{- |
+Check the `ChanBuf` `Entry` at the given position. If the `seen` count is
+greater than or equal to the new (decremented) output channel count, free
+the entry. This function returns whether or not an entry was freed.
+-}
+tryFreeChanBufAt :: ChanBuf a -> Word -> Word32 -> STM Bool
+tryFreeChanBufAt MkChanBuf{..} occ (W32# i#) =
+  STM $ \s1# ->
+    case indexSmallArray# arr# (word32ToInt# i#) of
+      (# vari# #) ->
+        case readTVar# vari# s1# of
+          (# s2#, Empty #) ->
+            (# s2#, False #)
+          (# s2#, Entry seen _val #)
+            | seen >= occ ->
+                case writeTVar# vari# Empty s2# of
+                  s3# -> (# s3#, True #)
+            | otherwise ->
+                (# s2#, False #)
 
 {- |
 Add a finalizer to a `TVar`.
@@ -235,7 +274,7 @@ addFinalizerTVar t@(TVar t#) (IO finalizer) = IO $ \s1# ->
 @`dup` o@ duplicates the output channel @o@.
 -}
 dup :: OutChan a -> IO (OutChan a)
-dup MkOutChan{inChan = inChan@MkInChan{..}, ..} = do
+dup outChan@MkOutChan{inChan = inChan@MkInChan{..}, ..} = do
   -- These two operations are performed atomically. Otherwise, if we're very
   -- unlucky with reorderings, we may get this interleaving between dup and
   -- receive on the same output channel:
@@ -256,7 +295,7 @@ dup MkOutChan{inChan = inChan@MkInChan{..}, ..} = do
     -- (2) Duplicate the output channel position variable.
     newTVar =<< readTVar ocpVar
 
-  addFinalizerTVar ocpVar' (decrementOutChanCount occVar)
+  addFinalizerTVar ocpVar' (freeOutChan outChan)
   pure MkOutChan{ocpVar = ocpVar', ..}
 
 {- |
