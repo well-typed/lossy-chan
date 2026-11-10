@@ -11,11 +11,10 @@ import Control.Exception (ArrayException (IndexOutOfBounds), assert, handle, thr
 import Control.Monad (replicateM, unless, void)
 import Data.Foldable (for_)
 import Data.IORef (IORef, mkWeakIORef, modifyIORef', newIORef, readIORef)
-import Data.List (unsnoc)
 import Data.Traversable (for)
 import Data.Word (Word32, Word8)
 import GHC.Stack (HasCallStack)
-import System.Mem (performBlockingMajorGC, performMajorGC)
+import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -177,7 +176,7 @@ unitTests n =
         LC.send i (Left t1)
         LC.send i (Right ())
         void (LC.receive o)
-        performBlockingMajorGC
+        performMajorGC
         timeout 100000 (takeMVar p1)
           >>= maybe (assertFailure "t1 was not freed") pure
     , testCase "receive hangs if InChan is dropped" $ do
