@@ -13,7 +13,7 @@ module Control.Concurrent.LossyChan (
   NoInChanError (..),
 ) where
 
-import Control.Exception (Exception, mask)
+import Control.Exception (Exception (..), mask)
 import GHC.Conc (STM (..), TVar (..), atomically, newTVar, newTVarIO, orElse, readTVar, retry, throwSTM, writeTVar)
 import GHC.Exts (Int#, MutVar#, RealWorld, SmallArray#, State#, TVar#, Weak#, Word32#, deRefWeak#, indexSmallArray#, isTrue#, mkWeak#, newMutVar#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word32ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
@@ -350,19 +350,9 @@ the buffer is empty, this function throws an `NoInChanError`.
 receiveT :: OutChan a -> STM a
 receiveT MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..} = do
   icPos <- readTVar icPosVar
-  ocPos0 <- readTVar ocPosVar
-  let ocPos1 = live icPos ocPos0
-  receiveT_ icPos ocPos1
+  ocPos <- live icPos <$> readTVar ocPosVar
+  receiveT_ icPos ocPos
  where
-  -- During the first loop, the loop counter is zero and the segment
-  -- between channel positions icPos and zero is uninitialised. During
-  -- subsequent loops, that segment is live. However, when the loop
-  -- counter wraps around, we will encounter the situation where the
-  -- loop counter is zero, but the segment between channel positions
-  -- icPos and zero is live. To handle this situation, if loop is zero,
-  -- we perform one read at icPos. If this memory is uninitialised, then
-  -- we skip to zero. This incurs one extra read on the first loop and
-  -- every maxBound loops after that.
   receiveT_ icPos ocPos
     | icPos == ocPos = do
         -- If the input channel is still live...
@@ -376,18 +366,8 @@ receiveT MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..}
         ocCount <- readTVar ocCountVar
         mbVal <- takeChanBuf buffer ocCount (next ocPos)
         case mbVal of
-          Nothing
-            | loop icPos == 0 && next icPos <= next ocPos -> receiveT_ icPos zero
-            | otherwise -> uninitialised ocPos
+          Nothing -> retry
           Just val -> writeTVar ocPosVar (advance len# ocPos) >> pure val
-   where
-    uninitialised :: a
-    uninitialised =
-      error . concat $
-        [ "Control.Concurrent.LossyChan: uninitialised memory"
-        , " at output position " <> show ocPos
-        , " (with input position " <> show icPos <> ")"
-        ]
 
 {- |
 @`receive` o@ receives a value from an output channel and
@@ -398,7 +378,8 @@ If the corresponding input channel was garbage collected and
 the buffer is empty, this function throws an `NoInChanError`.
 -}
 receive :: OutChan a -> IO a
-receive o = atomically $ receiveT o
+receive o =
+  atomically (receiveT o)
 
 {- |
 @`tryReceive` o@ receives `Just` a value from an output channel
@@ -409,7 +390,8 @@ If the corresponding input channel was garbage collected and
 the buffer is empty, this function throws an `NoInChanError`.
 -}
 tryReceive :: OutChan a -> IO (Maybe a)
-tryReceive o = atomically $ (Just <$> receiveT o) `orElse` (pure Nothing)
+tryReceive o = do
+  atomically ((Just <$> receiveT o) `orElse` (pure Nothing))
 
 {- |
 This type is used to test for liveness.
