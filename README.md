@@ -79,7 +79,7 @@ _This isn't a fair comparison_, since none of the other channel implementations 
 
 The time benchmark, created using `criterion`, shows that a `lossy-chan` channel is roughly as fast as an `unagi-chan` channel, and both are significantly faster than the `base` and `stm` channels. Moreover, the buffer size doesn't appear to significanly affect the performance of a `lossy-chan` channel.
 
-![Benchmark that compares lossy-chan with unagi-chan.](assets/benchmark.png)
+![Benchmark that compares lossy-chan with unagi-chan.](https://github.com/well-typed/lossy-chan/blob/ed2abb0ee3b55a549fce7f466f6a872c4bc6ec25/assets/benchmark.png?raw=true)
 
 ### Space
 
