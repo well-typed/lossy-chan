@@ -1,8 +1,8 @@
 cabal-version: 3.0
 name: lossy-chan
 version: 0.1.0.0
-synopsis: An implementation of a bounded lossy channel
-description: An implementation of a bounded lossy channel.
+synopsis: Fast, bounded, and /lossy/ broadcast channels backed by a ring buffer
+description: Fast, bounded, and /lossy/ broadcast channels backed by a ring buffer.
 license: BSD-3-Clause
 license-file: LICENSE
 author: Wen Kokke
@@ -13,8 +13,13 @@ build-type: Simple
 extra-doc-files:
   CHANGELOG.md
   README.md
+
 tested-with:
   ghc ==9.4.8 || ==9.6.7 || ==9.8.4 || ==9.10.3 || ==9.12.4 || ==9.14.1
+
+source-repository head
+  type: git
+  location: https://github.com/well-typed/lossy-chan.git
 
 common language
   ghc-options:
@@ -32,11 +37,11 @@ common language
 
   default-language: Haskell2010
 
-
 flag small-loop-counter
   description:
     Use Word8 instead of Word32 for the loop counter,
     for the purposes of testing loop counter overflows.
+
   default: False
   manual: True
 
@@ -69,31 +74,31 @@ benchmark lossy-chan-benchmark-time
   type: exitcode-stdio-1.0
   hs-source-dirs: benchmark
   main-is: time.hs
+  other-modules:
+    Benchmark.Chan
+    Benchmark.Simple
+
   build-depends:
+    async,
     base >=4.16 && <5,
     criterion,
-    lossy-chan:lossy-chan-benchmark-util,
+    lossy-chan,
+    stm,
+    unagi-chan,
 
 benchmark lossy-chan-benchmark-space
   import: language
   type: exitcode-stdio-1.0
   hs-source-dirs: benchmark
   main-is: space.hs
-  build-depends:
-    base >=4.16 && <5,
-    weigh,
-    lossy-chan:lossy-chan-benchmark-util,
-
-library lossy-chan-benchmark-util
-  import: language
-  visibility: private
-  hs-source-dirs: benchmark/util
-  exposed-modules:
+  other-modules:
     Benchmark.Chan
     Benchmark.Simple
+
   build-depends:
     async,
     base >=4.16 && <5,
     lossy-chan,
-    unagi-chan,
     stm,
+    unagi-chan,
+    weigh,
