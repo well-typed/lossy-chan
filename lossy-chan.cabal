@@ -10,7 +10,9 @@ maintainer: wen@well-typed.com
 copyright: (c) 2026 Well-Typed
 category: Concurrency
 build-type: Simple
-extra-doc-files: CHANGELOG.md
+extra-doc-files:
+  CHANGELOG.md
+  README.md
 tested-with:
   ghc ==9.4.8 || ==9.6.7 || ==9.8.4 || ==9.10.3 || ==9.12.4 || ==9.14.1
 
@@ -62,13 +64,36 @@ test-suite lossy-chan-test
   if flag(small-loop-counter)
     cpp-options: -DLOSSY_CHAN_SMALL_LOOP_COUNTER
 
-benchmark lossy-chan-benchmark
+benchmark lossy-chan-benchmark-time
   import: language
   type: exitcode-stdio-1.0
   hs-source-dirs: benchmark
-  main-is: Main.hs
+  main-is: time.hs
   build-depends:
     base >=4.16 && <5,
     criterion,
+    lossy-chan:lossy-chan-benchmark-util,
+
+benchmark lossy-chan-benchmark-space
+  import: language
+  type: exitcode-stdio-1.0
+  hs-source-dirs: benchmark
+  main-is: space.hs
+  build-depends:
+    base >=4.16 && <5,
+    weigh,
+    lossy-chan:lossy-chan-benchmark-util,
+
+library lossy-chan-benchmark-util
+  import: language
+  visibility: private
+  hs-source-dirs: benchmark/util
+  exposed-modules:
+    Benchmark.Chan
+    Benchmark.Simple
+  build-depends:
+    async,
+    base >=4.16 && <5,
     lossy-chan,
     unagi-chan,
+    stm,

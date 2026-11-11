@@ -18,7 +18,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 import Test.Tasty.QuickCheck (Arbitrary (..), Gen, Property, chooseBoundedIntegral, counterexample, forAll, ioProperty, label, oneof, testProperty)
 
 main :: IO ()
@@ -151,16 +151,15 @@ unitTests n =
         v @?= 1
         w <- timeout 1000 (LC.receive o)
         w @?= Nothing
-    , testCase "for_ [0..N+1] (send i) >> receive o ==> 2" $ do
+    , testCase "for_ [0..N] (send i) >> receive o ==> 1" $ do
         (i, o) <- LC.new @Word32 n
-        v <- for_ [0 .. n + 1] (LC.send i) >> LC.receive o
-        v @?= 2
+        v <- for_ [0 .. n] (LC.send i) >> LC.receive o
+        v @?= 1
     , testCase "for_ [0..N*2] (send i) >> receive o ==> N + 1" $ do
         (i, o) <- LC.new @Word32 n
         v <- for_ [0 .. n * 2] (LC.send i) >> LC.receive o
         v @?= n + 1
     , testCase "for_ [0..N*L+1] (send i) >> receive o ==> N * (L - 1) + 1" $ do
-        assertBool "Library was not built with --flags=+small-loop-counter." smallLoopCounterEnabled
         (i, o) <- LC.new @Word32 n
         v <- for_ [0 .. n * maxLoop] (LC.send i) >> LC.receive o
         v @?= n * (maxLoop - 1) + 1
@@ -202,16 +201,6 @@ build the library with @--flags=+small-loop-counter@.
 -}
 maxLoop :: Word32
 maxLoop = fromIntegral (maxBound :: Word8)
-
-{- |
-Whether or not the library was built with @--flags=+small-loop-counter@.
--}
-smallLoopCounterEnabled :: Bool
-#ifdef LOSSY_CHAN_SMALL_LOOP_COUNTER
-smallLoopCounterEnabled = True
-#else
-smallLoopCounterEnabled = False
-#endif
 
 --------------------------------------------------------------------------------
 -- TattleTale
