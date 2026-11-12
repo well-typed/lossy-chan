@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: lossy-chan
-version: 0.1.0.0
+version: 0.1.1.0
 synopsis: Fast, bounded, and lossy broadcast channels backed by a ring buffer
 description: Fast, bounded, and /lossy/ broadcast channels backed by a ring buffer.
 license: BSD-3-Clause
