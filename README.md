@@ -23,7 +23,7 @@ assertM (m' == 1)         -- 0 was dropped
 
 A `lossy-chan` channel is split into an input and an output channel, both of which are thread-safe.
 If you use a single output channel in two threads, the messages are split between the two.
-If you want two output channls that both receive every message, you can _duplicate_ the output channel.
+If you want two output channels that both receive every message, you can _duplicate_ the output channel.
 The new output channel receives messages starting where the duplicated channel left off. For example:
 
 ```haskell
@@ -39,6 +39,30 @@ assertM (m2 == 2)
 
 m2' <- LC.receive o1      -- receive the 2 on o1
 assertM (m2' == 2)
+```
+
+Alternatively, you can create a new output channel from the input channel.
+In this case, the new output channel receives messages starting from the oldest live message.
+This is non-determinstic, as it depends on garbage collection. For example:
+
+```haskell
+(i, _o) <- LC.new 64
+
+-- if GC runs here, there won't be any live output
+-- channels when send runs and the 1 is discarded.
+
+LC.send i 1
+
+-- if GC runs here, _o's finalizer removes the 1.
+
+o <- LC.out i
+
+-- if GC runs from here onwards, the 1 is kept.
+
+LC.send i 2
+
+m <- LC.receive o
+assertM (m `elem` [1,2])
 ```
 
 The `lossy-chan` buffer uses access counts to ensure that messages can be garbage collected as soon as they've been received by every output channel. This relies on finalizers and is not guaranteed to be prompt. For example:
