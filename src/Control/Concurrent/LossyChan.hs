@@ -228,7 +228,7 @@ data InChan a = MkInChan
 An output channel.
 
 An output channel has a finalizer that frees unreachable values in the ring buffer.
-The worst-case complexity of this operation is $O(N)$ where $N$ is the length of the ring buffer.
+The worst-case complexity of this operation is /O(N)/ where /N/ is the length of the ring buffer.
 -}
 data OutChan a = MkOutChan
   { ocState :: !(ChanState a)
@@ -358,7 +358,10 @@ dup oc@MkOutChan{ocState = ocState@MkChanState{..}, ..} =
 {- |
 @`out` i@ creates a new output channel from the input channel @i@.
 
-This worst-case complexity of this operation is $O(N)$ where $N$ is the length of the ring buffer.
+The new output channel starts receiving messages from the oldest position that still holds a live value.
+This is non-determinstic, as it depends on garbage collection.
+
+This worst-case complexity of this operation is /O(N)/ where /N/ is the length of the ring buffer.
 -}
 out :: InChan a -> IO (OutChan a)
 out MkInChan{icState = icState@MkChanState{..}, ..} =
