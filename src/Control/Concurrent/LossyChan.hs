@@ -7,13 +7,15 @@ module Control.Concurrent.LossyChan (
   OutChan,
   new,
   dup,
+  out,
   send,
   receive,
   tryReceive,
   NoInChanError (..),
 ) where
 
-import Control.Exception (Exception (..), mask)
+import Control.Exception (Exception (..), mask_)
+import Control.Monad (when)
 import GHC.Conc (STM (..), TVar (..), atomically, newTVar, newTVarIO, orElse, readTVar, retry, throwSTM, writeTVar)
 import GHC.Exts (Int#, MutVar#, RealWorld, SmallArray#, State#, TVar#, Weak#, Word32#, deRefWeak#, indexSmallArray#, isTrue#, mkWeak#, newMutVar#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word32ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
@@ -145,6 +147,20 @@ takeChanBuf MkChanBuf{..} ocCount (W32# i#) =
                   s3# -> (# s3#, Just val #)
 
 {- |
+Read the value from the given position in a `ChanBuf`.
+-}
+isEmptyChanBuf :: ChanBuf a -> Word32 -> STM Bool
+isEmptyChanBuf MkChanBuf{..} (W32# i#) =
+  STM $ \s1# ->
+    case indexSmallArray# arr# (word32ToInt# i#) of
+      (# vari# #) ->
+        case readTVar# vari# s1# of
+          (# s2#, Empty #) ->
+            (# s2#, True #)
+          (# s2#, Entry{} #) ->
+            (# s2#, False #)
+
+{- |
 Write the given value to a `ChanBuf` at the given position.
 -}
 writeChanBuf :: ChanBuf a -> Word32 -> Entry a -> STM ()
@@ -210,6 +226,9 @@ data InChan a = MkInChan
 
 {- |
 An output channel.
+
+An output channel has a finalizer that frees unreachable values in the ring buffer.
+The worst-case complexity of this operation is $O(N)$ where $N$ is the length of the ring buffer.
 -}
 data OutChan a = MkOutChan
   { ocState :: !(ChanState a)
@@ -292,21 +311,27 @@ new len = do
 
 {- |
 @`send` i x@ sends the value @x@ over the input channel @i@.
+
+__Warning:__ If there are no output channels, the value is discarded.
 -}
 send :: InChan a -> a -> IO ()
 send MkInChan{icState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}} a =
   atomically $ do
-    icPos@MkChanPos{..} <- readTVar icPosVar
-    writeChanBuf buffer next Entry{seen = 0, val = a}
-    writeTVar icPosVar (advance len# icPos)
+    ocCount <- readTVar ocCountVar
+    when (ocCount > 0) $ do
+      icPos@MkChanPos{..} <- readTVar icPosVar
+      writeChanBuf buffer next Entry{seen = 0, val = a}
+      writeTVar icPosVar (advance len# icPos)
 
 {- |
 @`dup` o@ duplicates the output channel @o@.
+
+The new output channel starts receiving messages from the same position as the duplicated channel.
 -}
 dup :: OutChan a -> IO (OutChan a)
 dup oc@MkOutChan{ocState = ocState@MkChanState{..}, ..} =
   -- This operation is masked to ensure that the finalizer is attached.
-  mask $ \_restore -> do
+  mask_ $ do
     -- These two operations are performed atomically. Otherwise, if we're very
     -- unlucky with reorderings, we may get this interleaving between dup and
     -- receive on the same output channel:
@@ -329,6 +354,58 @@ dup oc@MkOutChan{ocState = ocState@MkChanState{..}, ..} =
 
     addFinalizerTVar ocPosVar' (freeOutChan oc)
     pure MkOutChan{ocPosVar = ocPosVar', ..}
+
+{- |
+@`out` i@ creates a new output channel from the input channel @i@.
+
+This worst-case complexity of this operation is $O(N)$ where $N$ is the length of the ring buffer.
+-}
+out :: InChan a -> IO (OutChan a)
+out MkInChan{icState = icState@MkChanState{..}, ..} =
+  -- This operation is masked to ensure that the finalizer is attached.
+  mask_ $ do
+    -- See `dup` for an explanation for the use of `atomically`.
+    ocPosVar <- atomically $ do
+      -- (1) Increment the output channel counter.
+      writeTVar ocCountVar . (+ 1) =<< readTVar ocCountVar
+
+      -- (2) Set the output channel position variable.
+      icPos <- readTVar icPosVar
+      newTVar icPos{loop = loop icPos - 1}
+
+    -- Create the output channel.
+    let ocState = icState
+    ocIsLive <- mkIsLive icLive
+    let oc = MkOutChan{..}
+    addFinalizerTVar ocPosVar (freeOutChan oc)
+
+    -- Advance to the next non-Empty position.
+    advanceToNonEmpty oc
+
+    -- Return the output channel.
+    pure oc
+
+{- |
+Find the next non-`Empty` position in the channel buffer.
+-}
+advanceToNonEmpty :: OutChan a -> IO ()
+advanceToNonEmpty MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..} = do
+  let go = do
+        continue <-
+          atomically $ do
+            icPos <- readTVar icPosVar
+            ocPos <- live icPos <$> readTVar ocPosVar
+            if icPos == ocPos
+              then pure False
+              else do
+                isEmpty <- isEmptyChanBuf buffer (next ocPos)
+                if isEmpty
+                  then writeTVar ocPosVar (advance len# ocPos) >> pure True
+                  else pure False
+        when continue go
+  go
+
+--
 
 {- |
 The error thrown by `receive` and `tryReceive` when the corresponding `InChan`
