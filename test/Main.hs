@@ -5,6 +5,7 @@
 
 module Main where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.LossyChan qualified as LC
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (ArrayException (IndexOutOfBounds), assert, handle, throw)
@@ -135,7 +136,34 @@ Unit tests.
 unitTests :: Word32 -> TestTree
 unitTests n =
   testGroup ("Unit (with N = " <> show n <> ")") $
-    [ testCase "send i 1 >> receive o ==> 1" $ do
+    [ testCase "out continues from oldest live value" $ do
+        (i, o1) <- LC.new @Word32 n
+        for_ [1, 2] (LC.send i)
+
+        -- receive 1; is no longer live
+        m1 <- LC.receive o1
+        m1 @?= 1
+
+        -- create o2
+        o2 <- LC.out i
+
+        -- receive 2 on o1; remains live
+        m2 <- LC.receive o1
+        m2 @?= 2
+
+        -- receive 2 on o2
+        m2' <- LC.receive o2
+        m2' @?= 2
+    , testCase "send discards message if there are no output channels" $ do
+        (i, _) <- LC.new @Word32 n
+        performMajorGC
+        threadDelay 1000000
+        LC.send i 1
+        o <- LC.out i
+        LC.send i 2
+        m2 <- LC.receive o
+        m2 @?= 2
+    , testCase "send i 1 >> receive o ==> 1" $ do
         (i, o) <- LC.new @Word32 n
         v <- LC.send i 1 >> LC.receive o
         v @?= 1
