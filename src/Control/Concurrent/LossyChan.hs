@@ -16,10 +16,13 @@ module Control.Concurrent.LossyChan (
 
 import Control.Exception (Exception (..), mask_)
 import Control.Monad (when)
+import Data.Functor (void)
+import Data.IORef (IORef, mkWeakIORef, newIORef, readIORef)
+import Data.Word (Word32, Word8)
 import GHC.Conc (STM (..), TVar (..), atomically, newTVar, newTVarIO, orElse, readTVar, retry, throwSTM, writeTVar)
-import GHC.Exts (Int#, MutVar#, RealWorld, SmallArray#, State#, TVar#, Weak#, Word32#, deRefWeak#, indexSmallArray#, isTrue#, mkWeak#, newMutVar#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word32ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
+import GHC.Exts (Int#, RealWorld, SmallArray#, State#, TVar#, Word8#, indexSmallArray#, isTrue#, mkWeak#, newSmallArray#, newTVar#, readTVar#, unsafeFreezeSmallArray#, word2Int#, word8ToWord#, writeSmallArray#, writeTVar#, (+#), (==#))
 import GHC.IO (IO (..))
-import GHC.Word (Word32 (..))
+import GHC.Word (Word8 (..))
 
 #ifdef LOSSY_CHAN_SMALL_LOOP_COUNTER
 -- If the small-loop-counter flag is set, use Word8.
@@ -27,7 +30,7 @@ import Data.Word (Word8)
 
 type LoopCounter = Word8
 #else
--- Otherwise, use Word32.
+-- Otherwise, use Word8.
 type LoopCounter = Word32
 #endif
 
@@ -47,28 +50,47 @@ data ChanPos = MkChanPos
   will treat its current position as live, which may cause it to skip some of
   the messages in the buffer.
   -}
-  , next :: {-# UNPACK #-} !Word32
+  , next :: {-# UNPACK #-} !Word8
   {- ^
   This value tracks the next position that should be read (for receivers) or
   written to (for senders).
   -}
+  , done :: {-# UNPACK #-} !Word8
+  {- ^
+  This value tracks whether or not the `InChan` is connected.
+
+  If the value is @0@, the `InChan` is live. Otherwise, it was garbage collected.
+  -}
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 {- |
 The initial position in a channel ring buffer.
 -}
 zero :: ChanPos
-zero = MkChanPos{loop = 0, next = 0}
+zero = MkChanPos{done = 0, loop = 0, next = 0}
 {-# INLINE zero #-}
+
+{- |
+Check whether two `ChanPos` are at the same position.
+-}
+eqPos :: ChanPos -> ChanPos -> Bool
+eqPos icPos ocPos =
+  loop icPos == loop ocPos && next icPos == next ocPos
+
+{- |
+Check whether the input channel `ChanPos` is done.
+-}
+isDone :: ChanPos -> Bool
+isDone icPos = done icPos >= 1
 
 {- |
 Advance to the next channel position.
 -}
-advance :: Word32# -> ChanPos -> ChanPos
+advance :: Word8# -> ChanPos -> ChanPos
 advance len# MkChanPos{..}
-  | next < W32# len# - 1 = MkChanPos{next = next + 1, ..}
-  | otherwise = MkChanPos{loop = loop + 1, next = 0}
+  | next < W8# len# - 1 = MkChanPos{next = next + 1, ..}
+  | otherwise = MkChanPos{loop = loop + 1, next = 0, ..}
 {-# INLINE advance #-}
 
 {- |
@@ -83,7 +105,7 @@ live icPos ocPos
   -- position is aheaad of the input channel.
   | loop ocPos == loop icPos - 1 && next ocPos >= next icPos = ocPos
   -- The output channel is several loops behind the input channel.
-  | otherwise = icPos{loop = loop icPos - 1}
+  | otherwise = ocPos{loop = loop icPos - 1, next = next icPos}
 {-# INLINE live #-}
 
 data Entry a
@@ -98,7 +120,7 @@ types are explicitly unboxed, because we cannot rely on an @UNPACK@ pragma to
 unpack the @TVar@ inside of a @SmallArray@.
 -}
 data ChanBuf a = MkChanBuf
-  { len# :: Word32#
+  { len# :: Word8#
   -- ^ The length of the channel ring buffer.
   , arr# :: SmallArray# (TVar# RealWorld (Entry a))
   -- ^ The array that backs the channel ring buffer.
@@ -107,13 +129,13 @@ data ChanBuf a = MkChanBuf
 {- |
 Create a new channel buffer.
 -}
-newChanBuf :: Word32 -> IO (ChanBuf a)
-newChanBuf (W32# len#) = IO $ \s1# ->
-  case word32ToInt# len# of
+newChanBuf :: Word8 -> IO (ChanBuf a)
+newChanBuf (W8# len#) = IO $ \s1# ->
+  case word8ToInt# len# of
     ilen# ->
       case newTVar# Empty s1# of
         (# s2#, var0# #) ->
-          case newSmallArray# (word32ToInt# len#) var0# s2# of
+          case newSmallArray# (word8ToInt# len#) var0# s2# of
             (# s3#, mutarr# #) ->
               let go :: Int# -> State# RealWorld -> State# RealWorld
                   go i# = \s4# ->
@@ -130,10 +152,10 @@ newChanBuf (W32# len#) = IO $ \s1# ->
 {- |
 Read the value from the given position in a `ChanBuf`.
 -}
-takeChanBuf :: ChanBuf a -> Word -> Word32 -> STM (Maybe a)
-takeChanBuf MkChanBuf{..} ocCount (W32# i#) =
+takeChanBuf :: ChanBuf a -> Word -> Word8 -> STM (Maybe a)
+takeChanBuf MkChanBuf{..} ocCount (W8# i#) =
   STM $ \s1# ->
-    case indexSmallArray# arr# (word32ToInt# i#) of
+    case indexSmallArray# arr# (word8ToInt# i#) of
       (# vari# #) ->
         case readTVar# vari# s1# of
           (# s2#, Empty #) ->
@@ -149,10 +171,10 @@ takeChanBuf MkChanBuf{..} ocCount (W32# i#) =
 {- |
 Read the value from the given position in a `ChanBuf`.
 -}
-isEmptyChanBuf :: ChanBuf a -> Word32 -> STM Bool
-isEmptyChanBuf MkChanBuf{..} (W32# i#) =
+isEmptyChanBuf :: ChanBuf a -> Word8 -> STM Bool
+isEmptyChanBuf MkChanBuf{..} (W8# i#) =
   STM $ \s1# ->
-    case indexSmallArray# arr# (word32ToInt# i#) of
+    case indexSmallArray# arr# (word8ToInt# i#) of
       (# vari# #) ->
         case readTVar# vari# s1# of
           (# s2#, Empty #) ->
@@ -163,10 +185,10 @@ isEmptyChanBuf MkChanBuf{..} (W32# i#) =
 {- |
 Write the given value to a `ChanBuf` at the given position.
 -}
-writeChanBuf :: ChanBuf a -> Word32 -> Entry a -> STM ()
-writeChanBuf MkChanBuf{..} (W32# i#) a =
+writeChanBuf :: ChanBuf a -> Word8 -> Entry a -> STM ()
+writeChanBuf MkChanBuf{..} (W8# i#) a =
   STM $ \s1# ->
-    case indexSmallArray# arr# (word32ToInt# i#) of
+    case indexSmallArray# arr# (word8ToInt# i#) of
       (# vari# #) ->
         case writeTVar# vari# a s1# of
           s2# ->
@@ -180,10 +202,10 @@ the entry.
 This function returns `Just` `True` if the entry was freed, `Just` `False`
 if the entry was not freed, and `Nothing` if the entry was uninitialised.
 -}
-tryFreeChanBufAt :: ChanBuf a -> Word -> Word32 -> STM (Maybe Bool)
-tryFreeChanBufAt MkChanBuf{..} ocCount (W32# i#) =
+tryFreeChanBufAt :: ChanBuf a -> Word -> Word8 -> STM (Maybe Bool)
+tryFreeChanBufAt MkChanBuf{..} ocCount (W8# i#) =
   STM $ \s1# ->
-    case indexSmallArray# arr# (word32ToInt# i#) of
+    case indexSmallArray# arr# (word8ToInt# i#) of
       (# vari# #) ->
         case readTVar# vari# s1# of
           (# s2#, Empty #) ->
@@ -211,16 +233,11 @@ data ChanState a = MkChanState
 An input channel.
 -}
 data InChan a = MkInChan
-  { icState :: {-# UNPACK #-} !(ChanState a)
+  { icStateRef :: {-# UNPACK #-} !(IORef (ChanState a))
   {- ^
-  The underlying channel state.
+  An `IORef` to the underlying channel state.
 
-  This is shared between all input and output channels.
-  -}
-  , icLive :: {-# UNPACK #-} !Live
-  {- ^
-  When this value is dropped, the corresponding `IsLive`
-  values in the output channels can be used to detect it.
+  This `IORef` is /never/ written and exists only to attach a finalizer.
   -}
   }
 
@@ -237,11 +254,26 @@ data OutChan a = MkOutChan
 
   This is shared between all input and output channels.
   -}
-  , ocIsLive :: !IsLive
-  -- ^ A value used test whether the corresponding input channel is live.
   , ocPosVar :: !(TVar ChanPos)
   -- ^ A variable that holds this output channel's position.
   }
+
+{- |
+Free an input channel.
+-}
+freeInChan :: ChanState a -> IO ()
+freeInChan MkChanState{..} =
+  atomically $ do
+    icPos <- readTVar icPosVar
+    writeTVar icPosVar icPos{done = 1}
+
+{- |
+Add a finalizer to an `IORef`.
+
+Adapted from @mkWeakTVar in @stm@.
+-}
+addFinalizerIORef :: IORef a -> IO () -> IO ()
+addFinalizerIORef ref finalizer = void (mkWeakIORef ref finalizer)
 
 {- |
 Free an output channel.
@@ -262,15 +294,15 @@ freeOutChan MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, 
     -- Walk the buffer to free values that have been seen by every remaining OutChan.
     icPos <- readTVar icPosVar
     ocPos <- live icPos <$> readTVar ocPosVar
-    let go cp
-          | icPos == cp = pure ()
+    let go pos
+          | icPos `eqPos` pos = pure ()
           | otherwise = do
-              mbSuccess <- tryFreeChanBufAt buffer ocCount (next cp)
+              mbSuccess <- tryFreeChanBufAt buffer ocCount (next pos)
               case mbSuccess of
                 Nothing
-                  | loop icPos == 0 && next icPos <= next cp -> go zero
+                  | loop icPos == 0 && next icPos <= next pos -> go zero
                   | otherwise -> pure ()
-                Just True -> go (advance len# cp)
+                Just True -> go (advance len# pos)
                 Just False -> pure ()
     go ocPos
 
@@ -290,20 +322,20 @@ addFinalizerTVar t@(TVar t#) (IO finalizer) = IO $ \s1# ->
 
 The ring buffer is represented as a @SmallArray@, so @len@ should be smaller than 128.
 -}
-new :: Word32 -> IO (InChan a, OutChan a)
+new :: Word8 -> IO (InChan a, OutChan a)
 new len = do
   -- Create the input channel.
   buffer <- newChanBuf len
   icPosVar <- newTVarIO zero
   ocCountVar <- newTVarIO 1
-  icLive <- mkLive
   let icState = MkChanState{..}
+  icStateRef <- newIORef icState
+  addFinalizerIORef icStateRef (freeInChan icState)
   let ic = MkInChan{..}
 
   -- Create the output channel.
   ocPosVar <- newTVarIO zero
   let ocState = icState
-  ocIsLive <- mkIsLive icLive
   let oc = MkOutChan{..}
   addFinalizerTVar ocPosVar (freeOutChan oc)
 
@@ -315,7 +347,8 @@ new len = do
 __Warning:__ If there are no output channels, the value is discarded.
 -}
 send :: InChan a -> a -> IO ()
-send MkInChan{icState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}} a =
+send MkInChan{..} a = do
+  MkChanState{buffer = buffer@MkChanBuf{..}, ..} <- readIORef icStateRef
   atomically $ do
     ocCount <- readTVar ocCountVar
     when (ocCount > 0) $ do
@@ -364,7 +397,8 @@ This is non-determinstic, as it depends on garbage collection.
 This worst-case complexity of this operation is /O(N)/ where /N/ is the length of the ring buffer.
 -}
 out :: InChan a -> IO (OutChan a)
-out MkInChan{icState = icState@MkChanState{..}, ..} =
+out MkInChan{..} = do
+  icState@MkChanState{..} <- readIORef icStateRef
   -- This operation is masked to ensure that the finalizer is attached.
   mask_ $ do
     -- See `dup` for an explanation for the use of `atomically`.
@@ -378,7 +412,6 @@ out MkInChan{icState = icState@MkChanState{..}, ..} =
 
     -- Create the output channel.
     let ocState = icState
-    ocIsLive <- mkIsLive icLive
     let oc = MkOutChan{..}
     addFinalizerTVar ocPosVar (freeOutChan oc)
 
@@ -398,7 +431,7 @@ advanceToNonEmpty MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..},
           atomically $ do
             icPos <- readTVar icPosVar
             ocPos <- live icPos <$> readTVar ocPosVar
-            if icPos == ocPos
+            if icPos `eqPos` ocPos
               then pure False
               else do
                 isEmpty <- isEmptyChanBuf buffer (next ocPos)
@@ -434,14 +467,13 @@ receiveT MkOutChan{ocState = MkChanState{buffer = buffer@MkChanBuf{..}, ..}, ..}
   receiveT_ icPos ocPos
  where
   receiveT_ icPos ocPos
-    | icPos == ocPos = do
-        -- If the input channel is still live...
-        icLive <- isLive ocIsLive
-        if icLive
-          -- ...we retry.
-          then retry
-          -- Otherwise, throw an NoInChanError.
-          else throwSTM ErrNoInChan
+    | icPos `eqPos` ocPos = do
+        -- If the input channel is done...
+        if isDone icPos
+          -- ...throw an NoInChanError.
+          then throwSTM ErrNoInChan
+          -- Otherwise, we retry
+          else retry
     | otherwise = do
         ocCount <- readTVar ocCountVar
         mbVal <- takeChanBuf buffer ocCount (next ocPos)
@@ -474,57 +506,9 @@ tryReceive o = do
   atomically ((Just <$> receiveT o) `orElse` (pure Nothing))
 
 {- |
-This type is used to test for liveness.
-
-The target should hold on to a value of this type, the tester can use
-the corresponding `IsLive` to test whether the target is still live.
--}
-data Live = MkLive (MutVar# RealWorld ())
-
-{- |
-Create a value of type `Live`.
--}
-mkLive :: IO Live
-mkLive =
-  IO $ \s1# ->
-    case newMutVar# () s1# of
-      (# s2#, mv# #) ->
-        (# s2#, MkLive mv# #)
-
-{- |
-This type is used to test for liveness.
-
-See `Live`.
--}
-data IsLive = MkIsLive (Weak# (MutVar# RealWorld ()))
-
-{- |
-Create an `IsLive` value that tests whether the given `Live` value is live.
--}
-mkIsLive :: Live -> IO IsLive
-mkIsLive (MkLive mv#) =
-  IO $ \s1# ->
-    case mkWeak# mv# mv# (\s3# -> (# s3#, () #)) s1# of
-      (# s2#, wmv# #) ->
-        (# s2#, MkIsLive wmv# #)
-
-{- |
-Test whether the `Live` value that corresponds to the given `IsLive`
-value is still live.
--}
-isLive :: IsLive -> STM Bool
-isLive (MkIsLive wmv#) =
-  STM $ \s1# ->
-    case deRefWeak# wmv# s1# of
-      (# s2#, flag#, _ #) ->
-        case flag# of
-          0# -> (# s2#, False #)
-          _ -> (# s2#, True #)
-
-{- |
-The channel ring buffer is indexed by a `Word32`,
+The channel ring buffer is indexed by a `Word8`,
 which we must convert to an `Int` to index the underlying `SmallArray#`.
 -}
-word32ToInt# :: Word32# -> Int#
-word32ToInt# = \i# -> word2Int# (word32ToWord# i#)
-{-# INLINE word32ToInt# #-}
+word8ToInt# :: Word8# -> Int#
+word8ToInt# = \i# -> word2Int# (word8ToWord# i#)
+{-# INLINE word8ToInt# #-}
