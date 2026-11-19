@@ -5,7 +5,7 @@
 
 module Main where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.LossyChan qualified as LC
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (ArrayException (IndexOutOfBounds), assert, handle, throw)
@@ -19,7 +19,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Test.Tasty.QuickCheck (Arbitrary (..), Gen, Property, chooseBoundedIntegral, counterexample, forAll, ioProperty, label, oneof, testProperty)
 
 main :: IO ()
@@ -206,7 +206,7 @@ unitTests n =
         performMajorGC
         timeout 100000 (takeMVar p1)
           >>= maybe (assertFailure "t1 was not freed") pure
-    , testCase "receive hangs if InChan is dropped" $ do
+    , testCase "receive throws when InChan is dropped" $ do
         let handleNoChan LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
         (_, o) <- LC.new @() n
         performMajorGC
@@ -214,6 +214,21 @@ unitTests n =
         case v of
           Left LC.ErrNoInChan -> pure ()
           Right _ -> assertFailure "ErrNoInChan exception not thrown."
+    , testCase "receive does not throw when InChan is not dropped" $ do
+        let handleNoChan LC.ErrNoInChan = pure False
+        (i, o) <- LC.new @Word32 n
+        performMajorGC
+        _ <- forkIO $
+          for_ [0 .. n * maxLoop] $ \x ->
+            LC.send i x
+        let go k
+              | k >= n * maxLoop = pure ()
+              | otherwise =
+                  timeout 10000 (LC.receive o)
+                    >>= maybe (pure ()) (const $ go (k + 1))
+        success <- handle handleNoChan (go 0 >> pure True)
+        LC.send i 0
+        assertBool "ErrNoInChan was thrown" success
     ]
 
 --------------------------------------------------------------------------------
