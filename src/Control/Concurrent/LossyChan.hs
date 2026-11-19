@@ -248,13 +248,13 @@ An output channel has a finalizer that frees unreachable values in the ring buff
 The worst-case complexity of this operation is /O(N)/ where /N/ is the length of the ring buffer.
 -}
 data OutChan a = MkOutChan
-  { ocState :: !(ChanState a)
+  { ocState :: {-# UNPACK #-} !(ChanState a)
   {- ^
   The underlying channel state.
 
   This is shared between all input and output channels.
   -}
-  , ocPosVar :: !(TVar ChanPos)
+  , ocPosVar :: {-# UNPACK #-} !(TVar ChanPos)
   -- ^ A variable that holds this output channel's position.
   }
 
