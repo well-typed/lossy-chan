@@ -27,10 +27,11 @@ main = do
   defaultMain $
     testGroup
       "Tests"
-      [ unitTests 2
-      , unitTests 8
-      , unitTests 32
-      , unitTests 128
+      [ unitTestsFor 2
+      , unitTestsFor 8
+      , unitTestsFor 32
+      , unitTestsFor 128
+      , unitTests
       , propTests
       ]
 
@@ -131,10 +132,52 @@ prop_LoseNWhenLaggingBy2NPlus1 =
           mby == Just (n + 1)
 
 {- |
-Unit tests.
+Unit tests that do not depend on buffer length.
 -}
-unitTests :: Word32 -> TestTree
-unitTests n =
+unitTests :: TestTree
+unitTests =
+  testGroup "Unit" $
+    [ testCase "early free" $ do
+        p1 <- newEmptyMVar
+        t1 <- mkTattleTale p1
+        (i, o) <- LC.new 64
+        LC.send i (Left t1)
+        LC.send i (Right ())
+        void (LC.receive o)
+        performMajorGC
+        timeout 100000 (takeMVar p1)
+          >>= maybe (assertFailure "t1 was not freed") pure
+    , testCase "receive throws when InChan is dropped" $ do
+        let handleNoChan LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
+        (_, o) <- LC.new @() 64
+        performMajorGC
+        v <- handle handleNoChan (Right <$> timeout 10000 (LC.receive o))
+        case v of
+          Left LC.ErrNoInChan -> pure ()
+          Right _ -> assertFailure "ErrNoInChan exception not thrown."
+    , testCase "receive does not throw when InChan is not dropped" $ do
+        let handleNoChan LC.ErrNoInChan = pure False
+        (i, o) <- LC.new @Word32 64
+        performMajorGC
+        _ <- forkIO $
+          for_ [0 .. 256] $ \x ->
+            LC.send i x
+        let go :: Word32 -> IO ()
+            go k
+              | k >= 256 = pure ()
+              | otherwise =
+                  timeout 10000 (LC.receive o)
+                    >>= maybe (pure ()) (const $ go (k + 1))
+        success <- handle handleNoChan (go 0 >> pure True)
+        LC.send i 0
+        assertBool "ErrNoInChan was thrown" success
+    ]
+
+{- |
+Unit tests for a specific buffer length.
+-}
+unitTestsFor :: Word32 -> TestTree
+unitTestsFor n =
   testGroup ("Unit (with N = " <> show n <> ")") $
     [ testCase "out continues from oldest live value" $ do
         (i, o1) <- LC.new @Word32 n
@@ -196,39 +239,6 @@ unitTests n =
         o2 <- LC.dup o1
         vs <- LC.send i 1 >> traverse LC.receive [o1, o2]
         vs @?= [1, 1]
-    , testCase "early free" $ do
-        p1 <- newEmptyMVar
-        t1 <- mkTattleTale p1
-        (i, o) <- LC.new n
-        LC.send i (Left t1)
-        LC.send i (Right ())
-        void (LC.receive o)
-        performMajorGC
-        timeout 100000 (takeMVar p1)
-          >>= maybe (assertFailure "t1 was not freed") pure
-    , testCase "receive throws when InChan is dropped" $ do
-        let handleNoChan LC.ErrNoInChan = pure $ Left LC.ErrNoInChan
-        (_, o) <- LC.new @() n
-        performMajorGC
-        v <- handle handleNoChan (Right <$> timeout 10000 (LC.receive o))
-        case v of
-          Left LC.ErrNoInChan -> pure ()
-          Right _ -> assertFailure "ErrNoInChan exception not thrown."
-    , testCase "receive does not throw when InChan is not dropped" $ do
-        let handleNoChan LC.ErrNoInChan = pure False
-        (i, o) <- LC.new @Word32 n
-        performMajorGC
-        _ <- forkIO $
-          for_ [0 .. n * maxLoop] $ \x ->
-            LC.send i x
-        let go k
-              | k >= n * maxLoop = pure ()
-              | otherwise =
-                  timeout 10000 (LC.receive o)
-                    >>= maybe (pure ()) (const $ go (k + 1))
-        success <- handle handleNoChan (go 0 >> pure True)
-        LC.send i 0
-        assertBool "ErrNoInChan was thrown" success
     ]
 
 --------------------------------------------------------------------------------
