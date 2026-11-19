@@ -103,52 +103,11 @@ _This isn't a fair comparison_, since none of the other channel implementations 
 
 The time benchmark, created using `criterion`, shows that a `lossy-chan` channel is roughly as fast as an `unagi-chan` channel, and both are significantly faster than the `base` and `stm` channels. Moreover, the buffer size doesn't appear to significanly affect the performance of a `lossy-chan` channel.
 
-![Benchmark that compares lossy-chan with unagi-chan.](https://github.com/well-typed/lossy-chan/blob/ed2abb0ee3b55a549fce7f466f6a872c4bc6ec25/assets/benchmark.png?raw=true)
+![Benchmark that compares run-time for lossy-chan with base, stm, and unagi-chan.](https://github.com/well-typed/lossy-chan/blob/bb868200a8dd6dfe7af5da810fa6f0308a79bb77/assets/lossy-chan-benchmark-time-2026-11-19.png?raw=true)
 
 ### Space
 
-The space benchmark, created using `weigh`, shows that a `lossy-chan` channel has much lower maximum residency when compared to the other channel implementations, and that its maximum residency scales with the buffer size. This is expected from the use of a ring buffer.
+The space benchmark, created using `weigh`, shows that a `lossy-chan` channel has much lower maximum residency when compared to the other channel implementations – so much so, that it had to be rendered in a separate plot.
+Moreover, `lossy-chan`'s maximum residency scales up with the buffer size, as expected from the use of a ring buffer.
 
-
-| Benchmark        | Case                   |  Allocated | Max Residency |
-| :--------------- | :--------------------- | ---------: | ------------: |
-| `base`           | 1 senders, 1 receivers | 25,604,448 |     8,348,840 |
-|                  | 2 senders, 2 receivers | 51,208,176 |    12,275,048 |
-|                  | 3 senders, 3 receivers | 76,811,928 |    16,699,824 |
-|                  | 4 senders, 4 receivers | 96,154,064 |    24,617,800 |
-| `stm`            | 1 senders, 1 receivers | 16,805,400 |     8,830,408 |
-|                  | 2 senders, 2 receivers | 33,609,720 |     9,845,000 |
-|                  | 3 senders, 3 receivers | 50,414,848 |    14,717,096 |
-|                  | 4 senders, 4 receivers | 55,414,888 |    17,660,312 |
-| `unagi-chan`     | 1 senders, 1 receivers | 18,439,984 |     4,540,792 |
-|                  | 2 senders, 2 receivers | 36,862,432 |     4,541,464 |
-|                  | 3 senders, 3 receivers | 55,277,096 |    10,573,080 |
-|                  | 4 senders, 4 receivers | 73,698,768 |    10,573,984 |
-| `lossy-chan-2`   | 1 senders, 1 receivers | 12,008,624 |         3,088 |
-|                  | 2 senders, 2 receivers | 24,013,384 |         4,960 |
-|                  | 3 senders, 3 receivers | 36,018,184 |         6,816 |
-|                  | 4 senders, 4 receivers | 48,021,576 |         8,672 |
-| `lossy-chan-4`   | 1 senders, 1 receivers | 12,008,928 |         3,168 |
-|                  | 2 senders, 2 receivers | 24,014,392 |         5,040 |
-|                  | 3 senders, 3 receivers | 36,018,456 |         6,896 |
-|                  | 4 senders, 4 receivers | 48,021,664 |         8,752 |
-| `lossy-chan-8`   | 1 senders, 1 receivers | 12,009,536 |         3,328 |
-|                  | 2 senders, 2 receivers | 24,015,448 |         5,200 |
-|                  | 3 senders, 3 receivers | 36,019,056 |         7,056 |
-|                  | 4 senders, 4 receivers | 48,024,952 |         8,912 |
-| `lossy-chan-16`  | 1 senders, 1 receivers | 12,010,472 |         3,648 |
-|                  | 2 senders, 2 receivers | 24,017,080 |         5,520 |
-|                  | 3 senders, 3 receivers | 36,019,840 |         7,376 |
-|                  | 4 senders, 4 receivers | 48,028,224 |         9,232 |
-| `lossy-chan-32`  | 1 senders, 1 receivers | 12,011,728 |         4,288 |
-|                  | 2 senders, 2 receivers | 24,017,720 |         6,160 |
-|                  | 3 senders, 3 receivers | 36,028,936 |         8,016 |
-|                  | 4 senders, 4 receivers | 48,037,104 |         9,872 |
-| `lossy-chan-64`  | 1 senders, 1 receivers | 12,014,464 |         5,568 |
-|                  | 2 senders, 2 receivers | 24,030,232 |         7,440 |
-|                  | 3 senders, 3 receivers | 36,041,456 |         9,296 |
-|                  | 4 senders, 4 receivers | 48,067,576 |        11,152 |
-| `lossy-chan-128` | 1 senders, 1 receivers | 12,021,448 |         8,128 |
-|                  | 2 senders, 2 receivers | 24,047,128 |        10,000 |
-|                  | 3 senders, 3 receivers | 36,065,520 |        11,856 |
-|                  | 4 senders, 4 receivers | 48,083,512 |        13,712 |
+![Benchmark that compares heap usage for lossy-chan with base, stm, and unagi-chan.](https://github.com/well-typed/lossy-chan/blob/bb868200a8dd6dfe7af5da810fa6f0308a79bb77/assets/lossy-chan-benchmark-space-2026-11-19.png?raw=true)
