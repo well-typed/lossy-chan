@@ -15,7 +15,7 @@ main :: IO ()
 main = do
   mainWith $ do
     setColumns [Case, Allocated, Max]
-    setFormat Markdown
+    setFormat Plain
     wgroup "base" $
       for_ [1 .. 4] $ \s ->
         weighChanWith baseChan s s
