@@ -2,6 +2,7 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
@@ -15,6 +16,7 @@ import Data.IORef (IORef, mkWeakIORef, modifyIORef', newIORef, readIORef)
 import Data.Traversable (for)
 import Data.Word (Word32, Word8)
 import GHC.Stack (HasCallStack)
+import HeapSize (recursiveSize, runHeapsize)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak)
 import System.Timeout (timeout)
@@ -54,11 +56,11 @@ This test uses a single sender and a single receiver that alternate sending and 
 -}
 prop_LosslessWhenKeepingUpSimp :: Property
 prop_LosslessWhenKeepingUpSimp =
-  forAll (chooseBoundedIntegral (1, 128)) $ \n ->
-    forAll (chooseBoundedIntegral (1, 2 * n * maxLoop)) $ \m ->
-      label (if n >= m then "N >= M" else "N <  M") $
+  forAll (chooseBoundedIntegral (1, 128)) $ \(n :: Word8) ->
+    forAll (chooseBoundedIntegral (1, 2 * word8ToWord n * maxLoop)) $ \(m :: Word) ->
+      label (if word8ToWord n >= m then "N >= M" else "N <  M") $
         ioProperty $ do
-          (i, o) <- LC.new @Word32 n
+          (i, o) <- LC.new @Word n
           let xs = [0 .. m]
           and
             <$> ( for xs $ \x -> do
@@ -89,7 +91,7 @@ prop_LosslessWhenKeepingUpArb twc@(MkTraceWithConfig MkTraceConfig{..} _) =
     | otherwise = "N == 1  "
   mLabel :: String
   mLabel
-    | m >= n * maxLoop = "M >= N * maxLoop"
+    | m >= word8ToWord n * maxLoop = "M >= N * maxLoop"
     | otherwise = "M <  N * maxLoop"
   oknLabel :: String
   oknLabel
@@ -108,8 +110,8 @@ prop_Lose1WhenLaggingByNPlus1 :: Property
 prop_Lose1WhenLaggingByNPlus1 =
   forAll (chooseBoundedIntegral (1, 128)) $ \n ->
     ioProperty $ do
-      (i, o) <- LC.new @Word32 n
-      let xs = [0 .. n]
+      (i, o) <- LC.new @Word n
+      let xs = [0 .. word8ToWord n]
       for_ xs $ (LC.send i)
       mby <- LC.tryReceive o
       pure $
@@ -123,13 +125,13 @@ prop_LoseNWhenLaggingBy2NPlus1 :: Property
 prop_LoseNWhenLaggingBy2NPlus1 =
   forAll (chooseBoundedIntegral (1, 128)) $ \n ->
     ioProperty $ do
-      (i, o) <- LC.new @Word32 n
-      let xs = [0 .. 2 * n]
+      (i, o) <- LC.new @Word n
+      let xs = [0 .. 2 * word8ToWord n]
       for_ xs $ (LC.send i)
       mby <- LC.tryReceive o
       pure $
         counterexample ("Expected " <> show (n + 1) <> ", but received " <> show mby) $
-          mby == Just (n + 1)
+          mby == Just (word8ToWord n + 1)
 
 {- |
 Unit tests that do not depend on buffer length.
@@ -171,16 +173,19 @@ unitTests =
         success <- handle handleNoChan (go 0 >> pure True)
         LC.send i 0
         assertBool "ErrNoInChan was thrown" success
+    , testCase "size of ChanPos is 2" $ do
+        size <- runHeapsize 10 $! recursiveSize MkChanPos{done = 0, loop = 0, next = 0}
+        size @?= Just 2
     ]
 
 {- |
 Unit tests for a specific buffer length.
 -}
-unitTestsFor :: Word32 -> TestTree
+unitTestsFor :: Word8 -> TestTree
 unitTestsFor n =
   testGroup ("Unit (with N = " <> show n <> ")") $
     [ testCase "out continues from oldest live value" $ do
-        (i, o1) <- LC.new @Word32 n
+        (i, o1) <- LC.new @Word n
         for_ [1, 2] (LC.send i)
 
         -- receive 1; is no longer live
@@ -198,7 +203,7 @@ unitTestsFor n =
         m2' <- LC.receive o2
         m2' @?= 2
     , testCase "send discards message if there are no output channels" $ do
-        (i, _) <- LC.new @Word32 n
+        (i, _) <- LC.new @Word n
         performMajorGC
         threadDelay 1000000
         LC.send i 1
@@ -207,7 +212,7 @@ unitTestsFor n =
         m2 <- LC.receive o
         m2 @?= 2
     , testCase "send i 1 >> receive o ==> 1" $ do
-        (i, o) <- LC.new @Word32 n
+        (i, o) <- LC.new @Word n
         v <- LC.send i 1 >> LC.receive o
         v @?= 1
     , testCase "for [1,2] (\\x -> send i x >> receive 0) ==> [1,2]" $ do
@@ -217,29 +222,64 @@ unitTestsFor n =
         x2 <- LC.send i 2 >> LC.receive o
         x2 @?= 2
     , testCase "send i 1 >> receive o >> receive o ==> block" $ do
-        (i, o) <- LC.new @Word32 n
+        (i, o) <- LC.new @Word n
         v <- LC.send i 1 >> LC.receive o
         v @?= 1
         w <- timeout 1000 (LC.receive o)
         w @?= Nothing
     , testCase "for_ [0..N] (send i) >> receive o ==> 1" $ do
-        (i, o) <- LC.new @Word32 n
-        v <- for_ [0 .. n] (LC.send i) >> LC.receive o
+        (i, o) <- LC.new @Word n
+        v <- for_ [0 .. word8ToWord n] (LC.send i) >> LC.receive o
         v @?= 1
     , testCase "for_ [0..N*2] (send i) >> receive o ==> N + 1" $ do
-        (i, o) <- LC.new @Word32 n
-        v <- for_ [0 .. n * 2] (LC.send i) >> LC.receive o
-        v @?= n + 1
+        (i, o) <- LC.new @Word n
+        v <- for_ [0 .. word8ToWord n * 2] (LC.send i) >> LC.receive o
+        v @?= word8ToWord n + 1
     , testCase "for_ [0..N*L+1] (send i) >> receive o ==> N * (L - 1) + 1" $ do
-        (i, o) <- LC.new @Word32 n
-        v <- for_ [0 .. n * maxLoop] (LC.send i) >> LC.receive o
-        v @?= n * (maxLoop - 1) + 1
+        (i, o) <- LC.new @Word n
+        v <- for_ [0 .. word8ToWord n * maxLoop] (LC.send i) >> LC.receive o
+        v @?= word8ToWord n * (maxLoop - 1) + 1
     , testCase "send i 1 >> traverse receive [o1,o2] ==> [1,1]" $ do
-        (i, o1) <- LC.new @Word32 n
+        (i, o1) <- LC.new @Word n
         o2 <- LC.dup o1
         vs <- LC.send i 1 >> traverse LC.receive [o1, o2]
         vs @?= [1, 1]
     ]
+
+--------------------------------------------------------------------------------
+-- ChanPos
+--------------------------------------------------------------------------------
+
+{- |
+__Warning:__
+This definition is copied from "Control.Concurrent.LossyChan" and should be kept
+up to date. Otherwise, the heapsize test is meaningless.
+-}
+data ChanPos = MkChanPos
+  { loop :: {-# UNPACK #-} !Word32
+  {- ^
+  This value tracks the current loop around the channel ring buffer, which is
+  used to determine whether or not a channel position refers to a live value.
+
+  The `maxBound` of this type determines the resilience of the `OutChan`.
+  If a receiver stops at loop @N@ and does not resume until the sender has
+  written @`maxBound` - 1@ or @`maxBound`@ values and the loop counter has
+  wrapped around all the way back to loop @N - 1 @ or @N@, then the receiver
+  will treat its current position as live, which may cause it to skip some of
+  the messages in the buffer.
+  -}
+  , next :: {-# UNPACK #-} !Word8
+  {- ^
+  This value tracks the next position that should be read (for receivers) or
+  written to (for senders).
+  -}
+  , done :: {-# UNPACK #-} !Word8
+  {- ^
+  This value tracks whether or not the `InChan` is connected.
+
+  If the value is @1@, the `InChan` is done and has been garbage collected.
+  -}
+  }
 
 --------------------------------------------------------------------------------
 -- Maximum Loop Count
@@ -249,11 +289,11 @@ unitTestsFor n =
 The maximum loop value for a @ChanPos@.
 
 This value is the `maxBound` of `Word8`. In the actual implementation,
-`maxLoop` would be `maxBound` of `Word32`. To test the overflow cases,
+`maxLoop` would be `maxBound` of `Word`. To test the overflow cases,
 build the library with @--flags=+small-loop-counter@.
 -}
-maxLoop :: Word32
-maxLoop = fromIntegral (maxBound :: Word8)
+maxLoop :: Word
+maxLoop = word8ToWord (maxBound :: Word8)
 
 --------------------------------------------------------------------------------
 -- TattleTale
@@ -300,9 +340,9 @@ instance Arbitrary TraceWithConfig where
 This type holds the configuration for trace generation.
 -}
 data TraceConfig = MkTraceConfig
-  { n :: !Word32
+  { n :: !Word8
   -- ^ The size of the channel ring buffer.
-  , m :: !Word32
+  , m :: !Word
   -- ^ The total number of messages to send.
   , okn :: !Int
   -- ^ The total number of receivers that must keep up.
@@ -316,9 +356,9 @@ This type represents the operations on a @lossy-chan@ channel.
 -}
 data TraceOp
   = -- | @`Send` x t@ sends @x@ over the `LC.InChan`.
-    Send !Word32
+    Send !Word
   | -- | @`ReceiveK` k x t@ receives @x@ over the @k@'th `LC.OutChan` that must keep up.
-    ReceiveK !Int !Word32
+    ReceiveK !Int !Word
   | -- | @`Receive` l t@ receives some value over the @l@'th `LC.OutChan` that may lag behind.
     ReceiveL !Int
   deriving (Show)
@@ -340,11 +380,11 @@ instance Show Trace where
 This type holds the state of the system after at some point in a `Trace`.
 -}
 data TraceState = MkTraceState
-  { ic :: !Word32
+  { ic :: !Word
   -- ^ Number of messages sent over `LC.InChan`.
-  , okcs :: ![Word32]
+  , okcs :: ![Word]
   -- ^ Number of messages received per `LC.OutChan` that must keep up.
-  , olcs :: ![Word32]
+  , olcs :: ![Word]
   -- ^ Number of messages received per `LC.OutChan` that may lag behind.
   }
   deriving (Show)
@@ -396,8 +436,8 @@ Generate an arbitrary `TraceConfig`.
 -}
 genTraceConfig :: Gen TraceConfig
 genTraceConfig = do
-  n <- chooseBoundedIntegral (1, 128)
-  m <- chooseBoundedIntegral (2 * n, 2 * n * maxLoop)
+  (n :: Word8) <- chooseBoundedIntegral (1, 128)
+  (m :: Word) <- chooseBoundedIntegral (2 * word8ToWord n, 2 * word8ToWord n * maxLoop)
   okn <- chooseBoundedIntegral (2, 4)
   oln <- chooseBoundedIntegral (0, 2)
   pure MkTraceConfig{..}
@@ -466,14 +506,11 @@ valid MkTraceConfig{..} MkTraceState{..} =
       ic <= m
     , -- The difference between the number of sent and the number of received
       -- messages by channels that must keep up is at least 0 and at most n.
-      all (\okc -> let dm = asInt ic - asInt okc in 0 <= dm && dm <= asInt n) okcs
+      all (\okc -> let dm = wordToInt ic - wordToInt okc in 0 <= dm && dm <= wordToInt (word8ToWord n)) okcs
     , -- The difference between the number of sent and the number of received
       -- messages by channels that may lag behind is at least 0.
-      all (\olc -> let dm = asInt ic - asInt olc in 0 <= dm) olcs
+      all (\olc -> let dm = wordToInt ic - wordToInt olc in 0 <= dm) olcs
     ]
- where
-  asInt :: Word32 -> Int
-  asInt = fromIntegral
 
 {- |
 Apply the given function at the given index in the given list.
@@ -525,3 +562,12 @@ inBounds MkTraceConfig{..} = \case
   Send _ -> True
   ReceiveK k _ -> k < okn
   ReceiveL l -> l < oln
+
+
+word8ToWord :: Word8 -> Word
+word8ToWord = fromIntegral
+{-# INLINE word8ToWord #-}
+
+wordToInt :: Word -> Int
+wordToInt = fromIntegral
+{-# INLINE wordToInt #-}
