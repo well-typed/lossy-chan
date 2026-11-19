@@ -18,7 +18,7 @@ import Control.Concurrent.LossyChan qualified as LC
 import Control.Concurrent.STM.TChan qualified as STM
 import Control.Monad.STM (atomically)
 import Data.Kind (Type)
-import Data.Word (Word32)
+import Data.Word (Word8)
 
 {- |
 An abstraction over channel libraries.
@@ -34,7 +34,7 @@ data Chan (i :: Type -> Type) (o :: Type -> Type)
 {- |
 The `Chan` instance for @lossy-chan@.
 -}
-lossyChan :: Word32 -> Chan LC.InChan LC.OutChan
+lossyChan :: Word8 -> Chan LC.InChan LC.OutChan
 lossyChan len =
   MkChan
     { new = LC.new len
